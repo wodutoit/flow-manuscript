@@ -1,0 +1,39 @@
+# CLAUDE.md — {{title}}
+
+Guidance for Claude Code when working on this manuscript. **This file is authoritative for any session whose cwd is inside this folder.** The repo root `CLAUDE.md` contributes only the isolation rule; everything else about this book's craft lives here or in the files this document links to.
+
+## At a glance
+
+- **Working title:** {{title}}
+- **Genre:** {{genre}}
+- **POV:** {{pov}}
+- **Tense:** {{tense}}
+- **Logline:** {{logline}}
+
+## Isolation (hard rule)
+
+This manuscript is its own world. For this session:
+
+- Do **not** read files in sibling manuscript folders, even if a search or tool returns paths from outside this folder.
+- Do **not** carry over characters, places, plot beats, terminology, idioms, or stylistic patterns from any other manuscript — including ones discussed in earlier sessions or other repos.
+- Do **not** suggest cross-references to other books unless the user explicitly asks.
+- Treat the parent folder and all sibling folders as not on disk for craft purposes.
+
+See the repo root [CLAUDE.md](../CLAUDE.md) for the full repo-level statement of the rule.
+
+## Folder map
+
+- [overview.md](overview.md) — submission metadata (frontmatter) + premise, theme, audience, comparables
+- [outline.md](outline.md) — structural beats (high level)
+- [scenes/](scenes/) — one file per scene; see [scenes/_template.md](scenes/_template.md) for the per-scene format (Start / Trigger / Goal / Disaster / Shift·Sequel)
+- [characters/](characters/) — cast; see [characters/README.md](characters/README.md) for the index
+- [places/](places/) — locations; see [places/README.md](places/README.md) for the index
+- `compiled/` — generated on demand by the `compile-manuscript` shared skill; holds timestamped editor-handoff `.md` files. Not authored by hand.
+
+## Style notes
+
+<!-- Voice, tone, vocabulary, idioms, things to avoid. Fill in as the manuscript develops. -->
+
+## Working preferences
+
+<!-- E.g. "Match the voice of scenes/001-...", "Never invent new POV characters", "Ask before naming new places", "Prefer short paragraphs in action scenes". -->

@@ -1,0 +1,189 @@
+:root {
+  color-scheme: light dark;
+}
+
+body,
+#root {
+  margin: 0;
+  height: 100vh;
+  font-family: var(--vscode-font-family);
+  color: var(--vscode-foreground);
+  background: var(--vscode-editor-background);
+}
+
+.canvas {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  /* Prevent text selection so VS Code shows no native cut/copy/paste menu. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  flex-wrap: wrap;
+}
+
+.toolbar__group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.toolbar__label {
+  opacity: 0.75;
+  font-size: 12px;
+}
+
+.toolbar button {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 4px;
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  cursor: pointer;
+}
+
+.toolbar button:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.toolbar button.active {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.toolbar__warn {
+  margin-left: auto;
+  color: var(--vscode-errorForeground);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.react-flow {
+  flex: 1;
+}
+
+/* ---- nodes ---- */
+.node {
+  position: relative;
+  border-radius: 8px;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editorWidget-background);
+  padding: 8px 10px;
+  min-width: 150px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  font-size: 12px;
+}
+
+.node--scene {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  border-left: 3px solid #6ea8fe;
+}
+
+.node--invalid {
+  border-color: var(--vscode-errorForeground);
+  border-left-color: var(--vscode-errorForeground);
+  background: color-mix(in srgb, var(--vscode-errorForeground) 12%, var(--vscode-editorWidget-background));
+}
+
+.node__num {
+  font-weight: 700;
+  min-width: 18px;
+  text-align: center;
+  opacity: 0.85;
+}
+
+.node__title {
+  font-weight: 600;
+}
+
+.node__meta {
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+.node__kind {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10px;
+  opacity: 0.6;
+  margin-bottom: 2px;
+}
+
+.node--character {
+  border-left: 3px solid #63e6be;
+}
+
+.node--place {
+  border-left: 3px solid #ffd43b;
+}
+
+.node__warn {
+  color: var(--vscode-errorForeground);
+  font-weight: 800;
+  margin-left: 6px;
+}
+
+.badge {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+}
+
+/* ---- delete affordance ---- */
+.node__del {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  width: 18px;
+  height: 18px;
+  line-height: 16px;
+  text-align: center;
+  border-radius: 999px;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-foreground);
+  font-size: 13px;
+  cursor: pointer;
+  padding: 0;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  z-index: 3;
+}
+
+.node:hover .node__del,
+.react-flow__node.selected .node__del {
+  opacity: 1;
+}
+
+.node__del:hover {
+  background: var(--vscode-errorForeground);
+  color: #fff;
+  border-color: var(--vscode-errorForeground);
+}
+
+/* ---- selected node styling ---- */
+.react-flow__node.selected .node {
+  border-color: var(--vscode-focusBorder);
+  box-shadow: 0 0 0 2px var(--vscode-focusBorder), 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+
+/* An invalid (duplicate-root) scene keeps its red emphasis even when selected. */
+.react-flow__node.selected .node--invalid {
+  border-color: var(--vscode-errorForeground);
+  box-shadow: 0 0 0 2px var(--vscode-errorForeground), 0 1px 3px rgba(0, 0, 0, 0.25);
+}

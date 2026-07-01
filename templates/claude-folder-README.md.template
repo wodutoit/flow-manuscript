@@ -1,0 +1,13 @@
+# .claude
+
+This folder is for Claude Code workspace customizations specific to this manuscript.
+
+Things that may live here over time:
+
+- `settings.local.json` — permissions, hooks, env vars for this manuscript only
+- `agents/` — manuscript-specific subagents (e.g. a "voice-of-<narrator>" reviewer)
+- `skills/` — skills unique to this manuscript
+
+Shared skills (usable across all manuscripts) live in [`.claude/skills/` at the repo root](../../.claude/skills/).
+
+The actual Claude guidance and context for this manuscript lives in the parent folder as [`CLAUDE.md`](../CLAUDE.md), not here.

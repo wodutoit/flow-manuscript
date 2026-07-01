@@ -1,0 +1,45 @@
+---
+scene: 000
+chapter: 1
+# chapter_title: <Chapter Title>   # only set when this chapter has 2+ scenes; with one scene per chapter, the scene's `name` below is used as the chapter title at compile time
+name: <Scene Name>
+pov: <POV Character>
+goal: <One-line statement of what the POV character wants in this scene>
+status: outline   # outline | drafted | revised | final
+---
+
+# <Scene Name>
+
+## Visual beats
+
+> Reference the drawio frame, or sketch the flow in bullets.
+
+-
+-
+-
+
+## Structure
+
+### Start
+
+What's the situation at the opening? Where are we, who's present, what's the mood?
+
+### Trigger
+
+What event or line kicks the scene into motion?
+
+### Goal
+
+What does the POV character actively pursue in this scene? (Concrete, in-scene.)
+
+### Disaster
+
+What goes wrong, breaks, or shifts against them?
+
+### Shift / Sequel
+
+Emotional reaction → dilemma → decision. The bridge into what comes next.
+
+## Prose
+
+<!-- Draft prose below. The `compile-manuscript` skill extracts only this section. Keep notes and outline material above; once drafted, the prose section is the canonical text. -->

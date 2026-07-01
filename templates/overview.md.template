@@ -1,0 +1,42 @@
+---
+title: {{title}}
+author: <Your Name>
+pseudonym: null
+contact:
+  address: |
+    <Street>
+    <City, State ZIP>
+  phone: <Phone>
+  email: <Email>
+header_keyword: <ONE-WORD UPPERCASE KEYWORD FROM TITLE>
+genre: {{genre}}
+pov: {{pov}}
+tense: {{tense}}
+target_word_count: null
+---
+
+# Overview
+
+## Logline
+
+{{logline}}
+
+## Premise
+
+<!-- One paragraph: the story's core situation, the protagonist's want, and the obstacle. -->
+
+## Theme
+
+<!-- What the story is *about* underneath the plot. -->
+
+## Target audience
+
+<!-- TODO -->
+
+## Comparable titles
+
+<!-- "X meets Y" or two or three published books in a similar vein. -->
+
+## Status
+
+<!-- Drafting / outlining / revising / etc. Update as it changes. -->

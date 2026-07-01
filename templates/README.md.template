@@ -1,0 +1,13 @@
+# {{title}}
+
+> {{logline}}
+
+## Folder structure
+
+- `overview.md` — premise, theme, audience, word target
+- `outline.md` — structural beats
+- `scenes/` — one file per scene (see `_template.md` for the per-scene format)
+- `characters/` — cast (see `README.md` for the index)
+- `places/` — locations (see `README.md` for the index)
+- `.claude/` — Claude Code workspace for this manuscript
+- `CLAUDE.md` — guidance for Claude when working on this manuscript

@@ -1,0 +1,33 @@
+---
+name: <Place Name>
+type: <city | building | room | landscape | other>
+status: sketch   # sketch | developed | locked
+---
+
+# <Place Name>
+
+## Snapshot
+
+One-line description.
+
+## Sensory
+
+How does it look, sound, smell, feel? What's the temperature, the light, the air?
+
+## Significance
+
+Why does this place matter to the story? What happens here?
+
+## Inhabitants / Owners
+
+Who lives, works, or controls this place?
+
+## History
+
+Relevant backstory of the location — only what's load-bearing.
+
+## Map / Layout
+
+<!-- Reference a drawio file or sketch a quick layout if it matters for blocking. -->
+
+## Notes

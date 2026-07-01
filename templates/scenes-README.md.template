@@ -1,0 +1,26 @@
+# Scenes
+
+One file per scene. Copy [`_template.md`](_template.md) when adding a new one.
+
+**Naming convention:** `NNN-short-name.md` — three-digit zero-padded number so the directory sorts in story order. Renumber freely as the story shifts.
+
+## Chapter mapping convention
+
+The default workflow is **one scene per chapter**. In that case:
+
+- Each scene has its own `chapter:` number (`chapter: 1`, `chapter: 2`, ...).
+- The scene's `name` field doubles as the chapter title at compile time — no `chapter_title:` needed.
+
+When you later combine two or more scenes into a single chapter:
+
+- Give them the same `chapter:` number.
+- Add `chapter_title: "..."` to one of those scenes (first occurrence in scene-number order wins).
+- The `compile-manuscript` skill will warn if you have a multi-scene chapter without a `chapter_title:`.
+
+## Index
+
+<!-- List scenes here as you add them. Keep this in story order. -->
+
+| # | Name | POV | Status |
+|---|---|---|---|
+|  |  |  |  |

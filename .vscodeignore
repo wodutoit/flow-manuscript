@@ -1,0 +1,8 @@
+src/**
+webview-diagram/**
+webview-editor/**
+node_modules/**
+tsconfig*.json
+**/*.map
+.gitignore
+.vscode/**
