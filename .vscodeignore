@@ -2,6 +2,7 @@ src/**
 webview-diagram/**
 webview-editor/**
 node_modules/**
+scripts/**
 tsconfig*.json
 **/*.map
 .gitignore

@@ -23,8 +23,21 @@ export class ManuscriptTreeProvider
   private readonly _onDidChangeTreeData = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
-  constructor(private readonly manager: ManuscriptManager) {
-    manager.onDidChange(() => this._onDidChangeTreeData.fire());
+  private manager?: ManuscriptManager;
+  private changeSub?: vscode.Disposable;
+
+  constructor(manager?: ManuscriptManager) {
+    if (manager) this.attach(manager);
+  }
+
+  /** Attach (or replace) the manuscript manager and refresh the view. */
+  attach(manager: ManuscriptManager) {
+    this.manager = manager;
+    this.changeSub?.dispose();
+    this.changeSub = manager.onDidChange(() =>
+      this._onDidChangeTreeData.fire()
+    );
+    this._onDidChangeTreeData.fire();
   }
 
   refresh() {
@@ -36,6 +49,20 @@ export class ManuscriptTreeProvider
   }
 
   async getChildren(element?: FlowTreeItem): Promise<FlowTreeItem[]> {
+    // No manuscript loaded yet: show a single hint row so the view isn't blank
+    // and never reports "no data provider".
+    if (!this.manager) {
+      if (element) return [];
+      const hint = new FlowTreeItem(
+        "No manuscript loaded \u2014 open a manuscript folder",
+        vscode.TreeItemCollapsibleState.None,
+        "node"
+      );
+      hint.iconPath = new vscode.ThemeIcon("info");
+      hint.contextValue = "hint";
+      return [hint];
+    }
+
     if (!element) {
       // Overview document sits at the top, then the three node groups.
       const overview = new FlowTreeItem(
@@ -73,7 +100,7 @@ export class ManuscriptTreeProvider
     }
 
     if (element.itemKind === "group" && element.nodeKind) {
-      const state = await this.manager.diagramState();
+      const state = await this.manager!.diagramState();
       let nodes = state.nodes.filter((n) => n.kind === element.nodeKind);
       if (element.nodeKind === "scene") {
         nodes = nodes.sort(

@@ -3,8 +3,12 @@
   "displayName": "Flow Manuscript",
   "description": "Plan and write novels as a scene flow diagram with a rich Markdown editor.",
   "version": "0.1.0",
-  "publisher": "your-name",
+  "publisher": "local",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/wodutoit/flow-manuscript"
+  },
   "engines": {
     "vscode": "^1.90.0"
   },
@@ -90,11 +94,13 @@
     }
   },
   "scripts": {
-    "build:extension": "tsc -p tsconfig.extension.json",
+    "copy-dict": "node scripts/copy-dictionaries.js",
+    "build:extension": "node scripts/build-extension.js",
+    "typecheck:extension": "tsc -p tsconfig.extension.json --noEmit",
     "build:diagram": "vite build --config webview-diagram/vite.config.ts",
     "build:editor": "vite build --config webview-editor/vite.config.ts",
-    "build": "npm run build:extension && npm run build:diagram && npm run build:editor",
-    "watch:extension": "tsc -p tsconfig.extension.json --watch",
+    "build": "npm run copy-dict && npm run build:extension && npm run build:diagram && npm run build:editor",
+    "watch:extension": "node scripts/build-extension.js --watch",
     "package": "vsce package",
     "vscode:prepublish": "npm run build"
   },

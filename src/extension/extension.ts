@@ -12,6 +12,14 @@ let tree: ManuscriptTreeProvider | undefined;
 export async function activate(context: vscode.ExtensionContext) {
   const ext = context.extensionUri;
 
+  // Register the tree view provider immediately and unconditionally, so the
+  // view always has a data provider (otherwise VS Code shows "no data provider
+  // registered"). It starts empty and gains data once a manager is attached.
+  tree = new ManuscriptTreeProvider();
+  context.subscriptions.push(
+    vscode.window.registerTreeDataProvider("flowManuscript.tree", tree)
+  );
+
   const ensureManager = async (): Promise<ManuscriptManager | undefined> => {
     if (manager) return manager;
     const folder = vscode.workspace.workspaceFolders?.[0];
@@ -21,13 +29,9 @@ export async function activate(context: vscode.ExtensionContext) {
       );
       return undefined;
     }
-    // Heuristic: a manuscript has an outline.flow.json or scenes/ folder.
     manager = new ManuscriptManager(folder.uri, ext);
     await manager.load();
-    tree = new ManuscriptTreeProvider(manager);
-    context.subscriptions.push(
-      vscode.window.registerTreeDataProvider("flowManuscript.tree", tree)
-    );
+    tree?.attach(manager);
     return manager;
   };
 
@@ -159,17 +163,27 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("flowManuscript.addPlace", () => addFrom("place"))
   );
 
-  // Auto-init the tree if a manuscript is already open.
+  // Auto-init the tree if the open folder looks like a manuscript. We treat a
+  // folder as a manuscript if it has an outline.flow.json OR an overview.md
+  // (the latter covers skill-created books not yet imported; load() will seed
+  // an empty flow file so the tree still renders).
   const folder = vscode.workspace.workspaceFolders?.[0];
   if (folder) {
-    try {
-      await vscode.workspace.fs.stat(
-        vscode.Uri.joinPath(folder.uri, "outline.flow.json")
-      );
+    const has = async (name: string) => {
+      try {
+        await vscode.workspace.fs.stat(
+          vscode.Uri.joinPath(folder.uri, name)
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    if ((await has("outline.flow.json")) || (await has("overview.md"))) {
       await ensureManager();
-    } catch {
-      // Not a manuscript workspace yet; commands will lazily init.
     }
+    // Otherwise: not a manuscript workspace; the tree shows its hint row and
+    // commands will lazily init when invoked.
   }
 }
 
