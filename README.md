@@ -38,6 +38,13 @@ npm install
 npm run build      # builds extension host + both webview bundles
 ```
 
+```bash
+npm install
+npm run build
+npm run package
+code --install-extension flow-manuscript-0.1.0.vsix --force
+```
+
 This produces:
 - `dist-extension/` — compiled extension host (CommonJS)
 - `dist-diagram/index.js` + `index.css` — the diagram webview

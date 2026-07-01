@@ -187,3 +187,48 @@ body,
   border-color: var(--vscode-errorForeground);
   box-shadow: 0 0 0 2px var(--vscode-errorForeground), 0 1px 3px rgba(0, 0, 0, 0.25);
 }
+
+/* ---- edge tools (kind toggle + delete) ---- */
+.edge-tools {
+  position: absolute;
+  display: flex;
+  gap: 4px;
+  /* EdgeLabelRenderer children are pointer-events:none by default */
+  pointer-events: all;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+/* Show tools when hovering the edge path or the tools themselves. React Flow
+   wraps each edge in .react-flow__edge; :hover on it covers the path. */
+.react-flow__edge:hover .edge-tools,
+.react-flow__edge.selected .edge-tools,
+.edge-tools:hover {
+  opacity: 1;
+}
+
+.edge-tools button {
+  width: 18px;
+  height: 18px;
+  line-height: 16px;
+  text-align: center;
+  border-radius: 999px;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-foreground);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.edge-tools__del:hover {
+  background: var(--vscode-errorForeground);
+  color: #fff;
+  border-color: var(--vscode-errorForeground);
+}
+
+.edge-tools__kind:hover {
+  background: var(--vscode-focusBorder);
+  color: #fff;
+  border-color: var(--vscode-focusBorder);
+}

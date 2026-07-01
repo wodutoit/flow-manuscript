@@ -16,6 +16,7 @@ import ReactFlow, {
 import "reactflow/dist/style.css";
 import { post, onHostMessage } from "./bridge";
 import { nodeTypes } from "./nodes";
+import { edgeTypes } from "./edges";
 import type {
   DiagramState,
   DiagramNodeVM,
@@ -36,6 +37,7 @@ function toFlowNodes(vms: DiagramNodeVM[]): Node<DiagramNodeVM>[] {
 function toFlowEdges(state: DiagramState): Edge[] {
   return state.edges.map((e) => ({
     id: e.id,
+    type: "flow",
     source: e.source,
     target: e.target,
     animated: e.kind === "logical",
@@ -132,13 +134,6 @@ function Canvas() {
     post({ type: "moveNode", nodeId: node.id, position: node.position });
   }, []);
 
-  const onEdgeClick = useCallback((_e: React.MouseEvent, edge: Edge) => {
-    // Cycle edge kind on click for quick correction.
-    const current = (edge.data?.kind ?? "order") as EdgeKind;
-    const next: EdgeKind = current === "order" ? "logical" : "order";
-    post({ type: "setEdgeKind", edgeId: edge.id, kind: next });
-  }, []);
-
   const onEdgesDelete = useCallback((deleted: Edge[]) => {
     for (const e of deleted) post({ type: "deleteEdge", edgeId: e.id });
   }, []);
@@ -205,7 +200,7 @@ function Canvas() {
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onNodeDragStop={onNodeDragStop}
-        onEdgeClick={onEdgeClick}
+        edgeTypes={edgeTypes}
         onEdgesDelete={onEdgesDelete}
         onNodesDelete={onNodesDelete}
         fitView
