@@ -140,6 +140,172 @@ export class ManuscriptManager {
     );
   }
 
+  // -- importing an existing (skill-created) manuscript ---------------------
+
+  /**
+   * Build an outline.flow.json for an existing manuscript folder that already
+   * has overview.md + scenes/ + characters/ + places/ but no flow file.
+   *
+   * - Every .md in each folder (except _template.md and README.md) becomes a node.
+   * - Scene order: the leading NNN- filename prefix wins; if absent, the
+   *   frontmatter `scene:` number is used; scenes with neither are left
+   *   unconnected. Ordered scenes are chained with solid "order" edges.
+   * - Characters and places are always unconnected nodes.
+   * - Existing filenames are never changed.
+   *
+   * Returns a summary, or throws if a flow file already exists (caller warns).
+   */
+  static async importFromFolder(
+    root: vscode.Uri
+  ): Promise<{ scenes: number; characters: number; places: number; ordered: number }> {
+    const flowUri = vscode.Uri.joinPath(root, FLOW_FILE);
+    // Refuse if a flow file already exists.
+    try {
+      await vscode.workspace.fs.stat(flowUri);
+      throw new Error("exists");
+    } catch (e: any) {
+      if (e && e.message === "exists") throw e;
+      // otherwise: not found, good to proceed
+    }
+
+    const isSkippable = (name: string) =>
+      name === "_template.md" ||
+      name.toLowerCase() === "readme.md" ||
+      !name.toLowerCase().endsWith(".md");
+
+    const listMd = async (folder: string): Promise<string[]> => {
+      try {
+        const entries = await vscode.workspace.fs.readDirectory(
+          vscode.Uri.joinPath(root, folder)
+        );
+        return entries
+          .filter(([, type]) => type === vscode.FileType.File)
+          .map(([name]) => name)
+          .filter((name) => !isSkippable(name));
+      } catch {
+        return []; // folder may not exist
+      }
+    };
+
+    const nodes: FlowNode[] = [];
+    const edges: FlowEdge[] = [];
+
+    // Helper: read a file's frontmatter name, tolerating read errors.
+    const readName = async (rel: string, fallback: string): Promise<{ name: string; scene?: number }> => {
+      try {
+        const raw = dec.decode(
+          await vscode.workspace.fs.readFile(vscode.Uri.joinPath(root, ...rel.split("/")))
+        );
+        const { frontmatter } = parseDoc<Record<string, unknown>>(raw);
+        const name =
+          typeof frontmatter.name === "string" && frontmatter.name.trim()
+            ? (frontmatter.name as string)
+            : fallback;
+        const scene =
+          typeof frontmatter.scene === "number" ? (frontmatter.scene as number) : undefined;
+        return { name, scene };
+      } catch {
+        return { name: fallback };
+      }
+    };
+
+    const stemOf = (file: string) => file.replace(/\.md$/i, "");
+    const prefixNum = (file: string): number | undefined => {
+      const m = /^(\d{1,})[-_]/.exec(file);
+      return m ? parseInt(m[1], 10) : undefined;
+    };
+
+    // --- scenes ---
+    const sceneFiles = await listMd("scenes");
+    interface SceneImp {
+      node: FlowNode;
+      order?: number; // resolved ordering key, if any
+    }
+    const scenes: SceneImp[] = [];
+    for (const file of sceneFiles) {
+      const rel = `scenes/${file}`;
+      const { name, scene } = await readName(rel, stemOf(file));
+      // Order key: filename prefix wins, else frontmatter scene:.
+      const order = prefixNum(file) ?? scene;
+      scenes.push({
+        node: {
+          id: randomUUID(),
+          kind: "scene",
+          file: rel,
+          name,
+          position: { x: 0, y: 0 },
+        },
+        order,
+      });
+    }
+
+    // Split ordered vs unordered; chain the ordered ones.
+    const ordered = scenes
+      .filter((s) => s.order !== undefined)
+      .sort((a, b) => (a.order! - b.order!) || a.node.file.localeCompare(b.node.file));
+    const unordered = scenes.filter((s) => s.order === undefined);
+
+    ordered.forEach((s, i) => {
+      s.node.position = { x: 80 + i * 220, y: 80 };
+      nodes.push(s.node);
+      if (i > 0) {
+        edges.push({
+          id: randomUUID(),
+          kind: "order",
+          source: ordered[i - 1].node.id,
+          target: s.node.id,
+        });
+      }
+    });
+    unordered.forEach((s, i) => {
+      s.node.position = { x: 80 + i * 220, y: 200 };
+      nodes.push(s.node);
+    });
+
+    // --- characters ---
+    const charFiles = await listMd("characters");
+    let ci = 0;
+    for (const file of charFiles) {
+      const rel = `characters/${file}`;
+      const { name } = await readName(rel, stemOf(file));
+      nodes.push({
+        id: randomUUID(),
+        kind: "character",
+        file: rel,
+        name,
+        position: { x: 80 + ci++ * 200, y: 340 },
+      });
+    }
+
+    // --- places ---
+    const placeFiles = await listMd("places");
+    let pi = 0;
+    for (const file of placeFiles) {
+      const rel = `places/${file}`;
+      const { name } = await readName(rel, stemOf(file));
+      nodes.push({
+        id: randomUUID(),
+        kind: "place",
+        file: rel,
+        name,
+        position: { x: 80 + pi++ * 200, y: 460 },
+      });
+    }
+
+    const doc: FlowDocument = { version: 1, nodes, edges };
+    await vscode.workspace.fs.writeFile(
+      flowUri,
+      enc.encode(JSON.stringify(doc, null, 2) + "\n")
+    );
+
+    return {
+      scenes: scenes.length,
+      characters: charFiles.length,
+      places: placeFiles.length,
+      ordered: ordered.length,
+    };
+  }
+
   // -- node lookups ----------------------------------------------------------
 
   getNode(id: string): FlowNode | undefined {
@@ -552,23 +718,40 @@ export class ManuscriptManager {
     const language = await this.readLanguage();
     const pkg = language === "en_GB" ? "dictionary-en-gb" : "dictionary-en";
 
-    const affUri = vscode.Uri.joinPath(
+    // Dictionaries are copied into a bundled `dictionaries/<pkg>/` folder at
+    // build time (see scripts/copy-dictionaries), so they ship inside the
+    // .vsix. Fall back to node_modules when running from source without that
+    // copy step having run.
+    const bundled = vscode.Uri.joinPath(
+      this.extensionUri,
+      "dictionaries",
+      pkg
+    );
+    const fromNodeModules = vscode.Uri.joinPath(
       this.extensionUri,
       "node_modules",
-      pkg,
-      "index.aff"
+      pkg
     );
-    const dicUri = vscode.Uri.joinPath(
-      this.extensionUri,
-      "node_modules",
-      pkg,
-      "index.dic"
-    );
-    const aff = dec.decode(await vscode.workspace.fs.readFile(affUri));
-    const dic = dec.decode(await vscode.workspace.fs.readFile(dicUri));
+
+    const readPair = async (base: vscode.Uri) => {
+      const aff = dec.decode(
+        await vscode.workspace.fs.readFile(vscode.Uri.joinPath(base, "index.aff"))
+      );
+      const dic = dec.decode(
+        await vscode.workspace.fs.readFile(vscode.Uri.joinPath(base, "index.dic"))
+      );
+      return { aff, dic };
+    };
+
+    let pair: { aff: string; dic: string };
+    try {
+      pair = await readPair(bundled);
+    } catch {
+      pair = await readPair(fromNodeModules);
+    }
 
     const customWords = await this.readCustomWords();
-    return { language, aff, dic, customWords };
+    return { language, aff: pair.aff, dic: pair.dic, customWords };
   }
 
   // -- diagram state assembly ------------------------------------------------

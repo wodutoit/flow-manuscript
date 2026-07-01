@@ -21,6 +21,10 @@
         "title": "Flow Manuscript: New Manuscript…"
       },
       {
+        "command": "flowManuscript.importManuscript",
+        "title": "Flow Manuscript: Import Existing Manuscript…"
+      },
+      {
         "command": "flowManuscript.openDiagram",
         "title": "Flow Manuscript: Open Diagram",
         "icon": "$(type-hierarchy)"

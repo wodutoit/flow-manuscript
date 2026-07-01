@@ -74,6 +74,45 @@ export async function activate(context: vscode.ExtensionContext) {
     })
   );
 
+  // --- command: import an existing skill-created manuscript ----------------
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "flowManuscript.importManuscript",
+      async () => {
+        const picked = await vscode.window.showOpenDialog({
+          canSelectFolders: false,
+          canSelectFiles: true,
+          canSelectMany: false,
+          openLabel: "Select overview.md",
+          filters: { Markdown: ["md"] },
+        });
+        if (!picked?.[0]) return;
+        const overviewUri = picked[0];
+        // The manuscript root is the folder containing the chosen overview.md.
+        const root = vscode.Uri.joinPath(overviewUri, "..");
+
+        try {
+          const summary = await ManuscriptManager.importFromFolder(root);
+          vscode.window.showInformationMessage(
+            `Imported ${summary.scenes} scene(s) (${summary.ordered} ordered), ` +
+              `${summary.characters} character(s), ${summary.places} place(s). ` +
+              `Open this folder to view the diagram.`
+          );
+        } catch (e: any) {
+          if (e && e.message === "exists") {
+            vscode.window.showWarningMessage(
+              "This manuscript already has an outline.flow.json \u2014 import skipped so your existing diagram isn't overwritten."
+            );
+          } else {
+            vscode.window.showErrorMessage(
+              `Import failed: ${e?.message ?? String(e)}`
+            );
+          }
+        }
+      }
+    )
+  );
+
   // --- command: open the diagram -------------------------------------------
   context.subscriptions.push(
     vscode.commands.registerCommand("flowManuscript.openDiagram", async () => {
