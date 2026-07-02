@@ -188,37 +188,30 @@ body,
   box-shadow: 0 0 0 2px var(--vscode-errorForeground), 0 1px 3px rgba(0, 0, 0, 0.25);
 }
 
-/* ---- edge tools (kind toggle + delete) ---- */
+/* ---- edge tools (shown when an edge is selected) ---- */
 .edge-tools {
   position: absolute;
   display: flex;
   gap: 4px;
-  /* EdgeLabelRenderer children are pointer-events:none by default */
+  /* EdgeLabelRenderer children are pointer-events:none by default; the tools
+     must be clickable, and must sit above nodes/act containers. */
   pointer-events: all;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-
-/* Show tools when hovering the edge path or the tools themselves. React Flow
-   wraps each edge in .react-flow__edge; :hover on it covers the path. */
-.react-flow__edge:hover .edge-tools,
-.react-flow__edge.selected .edge-tools,
-.edge-tools:hover {
-  opacity: 1;
+  z-index: 10;
 }
 
 .edge-tools button {
-  width: 18px;
-  height: 18px;
-  line-height: 16px;
+  width: 20px;
+  height: 20px;
+  line-height: 18px;
   text-align: center;
   border-radius: 999px;
   border: 1px solid var(--vscode-panel-border);
   background: var(--vscode-editorWidget-background);
   color: var(--vscode-foreground);
-  font-size: 12px;
+  font-size: 13px;
   cursor: pointer;
   padding: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
 .edge-tools__del:hover {
@@ -231,4 +224,122 @@ body,
   background: var(--vscode-focusBorder);
   color: #fff;
   border-color: var(--vscode-focusBorder);
+}
+
+/* ---- act containers ---- */
+/* The act is a visual backdrop. It must NOT capture pointer events, or it would
+   steal hover/click from the scenes and edges stacked above it (breaking edge
+   delete, the logical connector, and scene selection). Only the header, handles
+   and resize controls are interactive (re-enabled below). */
+.act {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  border: 1.5px dashed var(--vscode-panel-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--vscode-foreground) 4%, transparent);
+  pointer-events: none;
+}
+
+.act--collapsed {
+  border-style: solid;
+  background: var(--vscode-editorWidget-background);
+}
+
+.act--invalid {
+  border-color: var(--vscode-errorForeground);
+}
+
+.act--selected {
+  border-style: solid;
+  border-color: var(--vscode-focusBorder);
+  box-shadow: 0 0 0 1px var(--vscode-focusBorder);
+}
+
+.act__header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  /* header is the drag handle for the act, and must be clickable */
+  cursor: grab;
+  pointer-events: all;
+}
+
+/* Re-enable pointer events for the act's own interactive controls. */
+.act .react-flow__handle,
+.act .react-flow__resize-control {
+  pointer-events: all;
+}
+
+.act__collapse {
+  cursor: pointer;
+  opacity: 0.8;
+  font-size: 12px;
+  width: 14px;
+  text-align: center;
+}
+
+.act__collapse:hover {
+  opacity: 1;
+}
+
+.act__title {
+  font-weight: 700;
+}
+
+.act__count {
+  opacity: 0.6;
+  font-size: 11px;
+}
+
+.act__tools {
+  margin-left: auto;
+  display: flex;
+  gap: 4px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+
+.act__header:hover .act__tools,
+.act--selected .act__tools {
+  opacity: 1;
+}
+
+.act__tools button {
+  width: 20px;
+  height: 20px;
+  line-height: 18px;
+  text-align: center;
+  border-radius: 4px;
+  border: 1px solid var(--vscode-panel-border);
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-foreground);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.act__tools button:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.act__tools .act__del:hover {
+  background: var(--vscode-errorForeground);
+  color: #fff;
+  border-color: var(--vscode-errorForeground);
+}
+
+.act__warn {
+  margin: 0 10px 8px;
+  font-size: 11px;
+  color: var(--vscode-errorForeground);
+  pointer-events: none;
+}
+
+/* Scene child nodes must sit above the act backdrop and receive events. */
+.react-flow__node-scene {
+  z-index: 1;
+  pointer-events: all;
 }

@@ -94,6 +94,7 @@ export class ManuscriptManager {
           sceneIds: Array.isArray(a.sceneIds) ? a.sceneIds : [],
           collapsed: a.collapsed ?? false,
           position: a.position,
+          size: a.size,
         })),
         nodes,
         edges,
@@ -511,6 +512,14 @@ export class ManuscriptManager {
     // cosmetic; no event
   }
 
+  async resizeAct(id: string, size: { width: number; height: number }) {
+    const act = this.getAct(id);
+    if (!act) return;
+    act.size = size;
+    await this.persist();
+    // cosmetic; no event
+  }
+
   /**
    * Delete an act and ALL its scenes (files included). Returns the number of
    * scenes removed so the caller can report it. The caller is responsible for
@@ -879,10 +888,14 @@ export class ManuscriptManager {
     // Only scenes participate in edges.
     if (!s || !t || s.kind !== "scene" || t.kind !== "scene") return;
     if (source === target) return;
-    // Scenes may only connect within the same act (no cross-act edges).
-    const sa = this.actOfScene(source);
-    const ta = this.actOfScene(target);
-    if (!sa || !ta || sa.id !== ta.id) return;
+    // Order edges define story sequence, which is per-act, so they must stay
+    // within a single act. Logical edges are POV/reference links and may span
+    // any two scenes in any acts.
+    if (kind === "order") {
+      const sa = this.actOfScene(source);
+      const ta = this.actOfScene(target);
+      if (!sa || !ta || sa.id !== ta.id) return;
+    }
     // Prevent duplicate identical edges.
     const dup = this.flow.edges.some(
       (e) => e.kind === kind && e.source === source && e.target === target

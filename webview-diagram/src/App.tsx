@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import ReactFlow, {
   Background,
   Controls,
@@ -20,53 +20,233 @@ import { edgeTypes } from "./edges";
 import type {
   DiagramState,
   DiagramNodeVM,
+  DiagramActVM,
   EdgeKind,
 } from "../../src/shared/types";
 
-function toFlowNodes(vms: DiagramNodeVM[]): Node<DiagramNodeVM>[] {
-  return vms.map((vm) => ({
-    id: vm.id,
-    type: vm.kind,
-    position: vm.position,
-    data: vm,
-    // characters/places are freely placed but not connectable
-    connectable: vm.kind === "scene",
-  }));
+// ---- layout constants ------------------------------------------------------
+// Acts are containers the user can position and resize freely; scenes are child
+// nodes the user can drag anywhere inside (or into another act). We honor stored
+// act size + stored scene positions, only falling back to a default layout when
+// nothing has been placed yet.
+
+const ACT_GAP_X = 80; // horizontal gap when auto-placing acts in a row
+const ACT_HEADER_H = 44; // height reserved for the act header
+const ACT_PAD = 16; // inner padding used for default scene placement
+const ACT_WIDTH = 260; // default act container width
+const SCENE_H = 66; // default vertical slot per scene
+const SCENE_GAP = 12; // default gap between stacked scenes
+const COLLAPSED_H = 60; // height of a collapsed act
+const ENTITY_LANE_GAP = 160; // gap below acts before character/place lanes
+const ENTITY_W = 200;
+
+interface LayoutResult {
+  nodes: Node[];
+  actRects: Map<string, { x: number; y: number; w: number; h: number }>;
 }
 
-function toFlowEdges(state: DiagramState): Edge[] {
-  return state.edges.map((e) => ({
-    id: e.id,
-    type: "flow",
-    source: e.source,
-    target: e.target,
-    animated: e.kind === "logical",
-    style:
-      e.kind === "logical"
-        ? { strokeDasharray: "6 4", strokeWidth: 1.5 }
-        : { strokeWidth: 2 },
-    markerEnd: { type: MarkerType.ArrowClosed },
-    data: { kind: e.kind },
-  }));
+/**
+ * Build React Flow nodes from diagram state. Acts become container nodes; their
+ * scenes are child nodes (parentNode). Collapsed acts omit their scenes.
+ * Characters/places sit in lanes below the acts.
+ *
+ * IMPORTANT: React Flow requires a parent node to appear BEFORE its children in
+ * the array, so we push each act then its scenes.
+ */
+function layout(state: DiagramState): LayoutResult {
+  const invalid = new Set(state.invalidActIds);
+  const nodes: Node[] = [];
+  const actRects = new Map<
+    string,
+    { x: number; y: number; w: number; h: number }
+  >();
+
+  const acts = [...state.acts].sort((a, b) => a.order - b.order);
+
+  // Scenes grouped by act, in per-act chain order (used only for defaults).
+  const scenesByAct = new Map<string, DiagramNodeVM[]>();
+  for (const n of state.nodes) {
+    if (n.kind !== "scene" || !n.actId) continue;
+    const arr = scenesByAct.get(n.actId) ?? [];
+    arr.push(n);
+    scenesByAct.set(n.actId, arr);
+  }
+  for (const arr of scenesByAct.values()) {
+    arr.sort((a, b) => (a.actSceneNumber ?? 1e9) - (b.actSceneNumber ?? 1e9));
+  }
+
+  // Running cursor for auto-placing acts with no stored position. Seed it past
+  // any acts that DO have a stored position so a new act never overlaps one.
+  const actY = 40;
+  let cursorX = 40;
+  for (const act of acts) {
+    if (act.position) {
+      const w = act.size?.width ?? ACT_WIDTH;
+      cursorX = Math.max(cursorX, act.position.x + w + ACT_GAP_X);
+    }
+  }
+
+  let maxActBottom = actY;
+
+  for (const act of acts) {
+    const scenes = scenesByAct.get(act.id) ?? [];
+    const defaultBodyH = Math.max(
+      SCENE_H,
+      scenes.length * (SCENE_H + SCENE_GAP)
+    );
+    const w = act.size?.width ?? ACT_WIDTH;
+    const h = act.collapsed
+      ? COLLAPSED_H
+      : act.size?.height ?? ACT_HEADER_H + ACT_PAD * 2 + defaultBodyH;
+
+    let x: number;
+    let y: number;
+    if (act.position) {
+      x = act.position.x;
+      y = act.position.y;
+    } else {
+      x = cursorX;
+      y = actY;
+      cursorX += w + ACT_GAP_X;
+    }
+
+    nodes.push({
+      id: act.id,
+      type: "act",
+      position: { x, y },
+      data: { ...act, invalid: invalid.has(act.id) },
+      style: { width: w, height: h },
+      draggable: true,
+      selectable: true,
+    });
+    actRects.set(act.id, { x, y, w, h });
+
+    if (!act.collapsed) {
+      scenes.forEach((s, i) => {
+        // Honor a stored (non-origin) position; else stack by default. Scene
+        // positions are RELATIVE to the parent act container.
+        const stored = s.position;
+        const hasStored = !!stored && (stored.x !== 0 || stored.y !== 0);
+        const rel = hasStored
+          ? stored
+          : {
+              x: ACT_PAD,
+              y: ACT_HEADER_H + ACT_PAD + i * (SCENE_H + SCENE_GAP),
+            };
+        nodes.push({
+          id: s.id,
+          type: "scene",
+          position: rel,
+          data: s,
+          parentNode: act.id,
+          // Not extent:"parent" — we allow dragging a scene out to another act.
+          draggable: true,
+        });
+      });
+    }
+
+    maxActBottom = Math.max(maxActBottom, y + h);
+  }
+
+  // Characters and places in lanes below the acts.
+  const laneY = maxActBottom + ENTITY_LANE_GAP;
+  const chars = state.nodes.filter((n) => n.kind === "character");
+  const places = state.nodes.filter((n) => n.kind === "place");
+  chars.forEach((n, i) => {
+    nodes.push({
+      id: n.id,
+      type: "character",
+      position: { x: 40 + i * ENTITY_W, y: laneY },
+      data: n,
+    });
+  });
+  places.forEach((n, i) => {
+    nodes.push({
+      id: n.id,
+      type: "place",
+      position: { x: 40 + i * ENTITY_W, y: laneY + 120 },
+      data: n,
+    });
+  });
+
+  return { nodes, actRects };
+}
+
+/** Scene-chain (intra-act) edges + act-order edges between act containers. */
+function layoutEdges(state: DiagramState): Edge[] {
+  const edges: Edge[] = [];
+
+  for (const e of state.edges) {
+    edges.push({
+      id: e.id,
+      type: "flow",
+      source: e.source,
+      target: e.target,
+      sourceHandle: "out",
+      targetHandle: "in",
+      animated: e.kind === "logical",
+      style:
+        e.kind === "logical"
+          ? { strokeDasharray: "6 4", strokeWidth: 1.5 }
+          : { strokeWidth: 2 },
+      markerEnd: { type: MarkerType.ArrowClosed },
+      data: { kind: e.kind },
+      // A wide invisible interaction band makes the thin edge easy to click to
+      // select (which reveals its delete/kind tools).
+      interactionWidth: 24,
+      selectable: true,
+      // paint scene edges above the act container backdrop
+      zIndex: 5,
+    });
+  }
+
+  // Act-order edges between consecutive acts (structural, not user-editable).
+  const acts = [...state.acts].sort((a, b) => a.order - b.order);
+  for (let i = 1; i < acts.length; i++) {
+    edges.push({
+      id: `act-order-${acts[i - 1].id}-${acts[i].id}`,
+      source: acts[i - 1].id,
+      target: acts[i].id,
+      sourceHandle: "act-out",
+      targetHandle: "act-in",
+      type: "smoothstep",
+      animated: false,
+      style: { strokeWidth: 3, stroke: "var(--vscode-focusBorder)" },
+      markerEnd: { type: MarkerType.ArrowClosed },
+      deletable: false,
+      selectable: false,
+      zIndex: 0,
+    });
+  }
+
+  return edges;
 }
 
 function Canvas() {
-  // React Flow owns node/edge state so dragging, selection, etc. work. We sync
-  // this from host state whenever it arrives, and push structural changes back.
-  const [nodes, setNodes, onNodesChange] = useNodesState<DiagramNodeVM>([]);
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  // The kind of edge the next drawn connection becomes.
   const [drawKind, setDrawKind] = useState<EdgeKind>("order");
   const [invalidActCount, setInvalidActCount] = useState(0);
-  // Id of the node most recently copied (Ctrl/Cmd+C), for paste (Ctrl/Cmd+V).
+
+  const actRectsRef = useRef<
+    Map<string, { x: number; y: number; w: number; h: number }>
+  >(new Map());
+  const sceneActRef = useRef<Map<string, string>>(new Map());
   const copiedIdRef = useRef<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     const off = onHostMessage((msg) => {
       if (msg.type === "state") {
-        setNodes(toFlowNodes(msg.state.nodes));
-        setEdges(toFlowEdges(msg.state));
+        const { nodes: laidOut, actRects } = layout(msg.state);
+        actRectsRef.current = actRects;
+        const map = new Map<string, string>();
+        for (const n of msg.state.nodes) {
+          if (n.kind === "scene" && n.actId) map.set(n.id, n.actId);
+        }
+        sceneActRef.current = map;
+        setNodes(laidOut);
+        setEdges(layoutEdges(msg.state));
         setInvalidActCount(msg.state.invalidActIds.length);
       }
     });
@@ -74,8 +254,7 @@ function Canvas() {
     return off;
   }, [setNodes, setEdges]);
 
-  // Copy (Ctrl/Cmd+C) remembers the selected node; Paste (Ctrl/Cmd+V) asks the
-  // host to duplicate it as a new, unconnected node with a full .md copy.
+  // Copy/paste a scene node (duplicate, unconnected, same act).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
@@ -92,63 +271,111 @@ function Canvas() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
-  // Suppress the native right-click context menu (cut/copy/paste) — it operates
-  // on text, not diagram nodes, so it only confuses. Node actions live on the
-  // node itself (delete icon) and in the toolbar (duplicate).
+  // Suppress the native right-click menu.
   useEffect(() => {
     const onCtx = (e: MouseEvent) => {
       e.preventDefault();
       e.stopPropagation();
       return false;
     };
-    // Capture phase on document so we intercept before anything else, and also
-    // bind the non-passive listener explicitly.
     document.addEventListener("contextmenu", onCtx, { capture: true });
     return () =>
       document.removeEventListener("contextmenu", onCtx, { capture: true });
   }, []);
 
-  // Apply drag/selection changes locally; persist final position on drag stop.
   const handleNodesChange = useCallback(
     (changes: NodeChange[]) => onNodesChange(changes),
     [onNodesChange]
   );
 
+  // Drawing a connection. Act handles -> reorder acts; scene handles -> a scene
+  // order/logical edge in the currently selected draw kind.
   const onConnect = useCallback(
     (c: Connection) => {
       if (!c.source || !c.target) return;
+      if (c.sourceHandle === "act-out" || c.targetHandle === "act-in") {
+        post({ type: "connectActs", sourceActId: c.source, targetActId: c.target });
+        return;
+      }
       post({ type: "connect", source: c.source, target: c.target, kind: drawKind });
     },
     [drawKind]
   );
 
+  // Track selection for copy/duplicate (scenes only).
+  const onSelectionChange = useCallback(
+    ({ nodes: sel }: { nodes: Node[] }) => {
+      const scene = sel.find((n) => n.type === "scene");
+      selectedIdRef.current = scene ? scene.id : null;
+    },
+    []
+  );
+
+  // Double-click: open a scene in the editor; toggle collapse on an act.
   const onNodeDoubleClick: NodeMouseHandler = useCallback((_e, node) => {
-    post({ type: "openNode", nodeId: node.id });
+    if (node.type === "act") {
+      const collapsed = !!(node.data as DiagramActVM).collapsed;
+      post({ type: "setActCollapsed", actId: node.id, collapsed: !collapsed });
+    } else if (node.type === "scene") {
+      post({ type: "openNode", nodeId: node.id });
+    }
   }, []);
 
-  const onNodeClick: NodeMouseHandler = useCallback((_e, node) => {
-    selectedIdRef.current = node.id;
-  }, []);
-
+  // On drag stop:
+  //  - act: persist its new position
+  //  - scene: if dropped over a DIFFERENT act, move it there; otherwise persist
+  //    its new position within its current act (free layout).
   const onNodeDragStop: NodeMouseHandler = useCallback((_e, node) => {
-    post({ type: "moveNode", nodeId: node.id, position: node.position });
+    if (node.type === "act") {
+      post({ type: "moveActPosition", actId: node.id, position: node.position });
+      return;
+    }
+    if (node.type === "scene") {
+      const currentActId = sceneActRef.current.get(node.id);
+      const parentRect = currentActId
+        ? actRectsRef.current.get(currentActId)
+        : undefined;
+      const abs =
+        node.positionAbsolute ?? {
+          x: (parentRect?.x ?? 0) + node.position.x,
+          y: (parentRect?.y ?? 0) + node.position.y,
+        };
+
+      // Which act does the drop point fall inside?
+      let targetActId: string | undefined;
+      for (const [actId, r] of actRectsRef.current) {
+        if (
+          abs.x >= r.x &&
+          abs.x <= r.x + r.w &&
+          abs.y >= r.y &&
+          abs.y <= r.y + r.h
+        ) {
+          targetActId = actId;
+          break;
+        }
+      }
+
+      if (targetActId && targetActId !== currentActId) {
+        post({ type: "moveSceneToAct", sceneId: node.id, actId: targetActId });
+      } else {
+        // Same act (or outside any act): persist the new position so the user's
+        // free layout sticks. node.position is relative to the parent act.
+        post({ type: "moveNode", nodeId: node.id, position: node.position });
+      }
+    }
   }, []);
 
   const onEdgesDelete = useCallback((deleted: Edge[]) => {
-    for (const e of deleted) post({ type: "deleteEdge", edgeId: e.id });
-  }, []);
-
-  const onNodesDelete = useCallback((deleted: Node[]) => {
-    for (const n of deleted) post({ type: "deleteNode", nodeId: n.id });
+    for (const e of deleted) {
+      if (e.type === "flow") post({ type: "deleteEdge", edgeId: e.id });
+    }
   }, []);
 
   return (
     <div className="canvas">
       <div className="toolbar">
         <div className="toolbar__group">
-          <button onClick={() => post({ type: "addNode", kind: "scene" })}>
-            + Scene
-          </button>
+          <button onClick={() => post({ type: "addAct" })}>+ Act</button>
           <button onClick={() => post({ type: "addNode", kind: "character" })}>
             + Character
           </button>
@@ -160,7 +387,7 @@ function Canvas() {
               if (selectedIdRef.current)
                 post({ type: "duplicateNode", nodeId: selectedIdRef.current });
             }}
-            title="Duplicate the selected node (or use Ctrl/Cmd+C then Ctrl/Cmd+V)"
+            title="Duplicate the selected scene (or Ctrl/Cmd+C then Ctrl/Cmd+V)"
           >
             Duplicate
           </button>
@@ -170,7 +397,7 @@ function Canvas() {
           <button
             className={drawKind === "order" ? "active" : ""}
             onClick={() => setDrawKind("order")}
-            title="Solid arrow — story order"
+            title="Solid arrow — story order within an act"
           >
             Order (solid)
           </button>
@@ -194,15 +421,14 @@ function Canvas() {
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
+        edgeTypes={edgeTypes}
         onNodesChange={handleNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
-        onNodeClick={onNodeClick}
+        onSelectionChange={onSelectionChange}
         onNodeDoubleClick={onNodeDoubleClick}
         onNodeDragStop={onNodeDragStop}
-        edgeTypes={edgeTypes}
         onEdgesDelete={onEdgesDelete}
-        onNodesDelete={onNodesDelete}
         fitView
         proOptions={{ hideAttribution: true }}
       >
@@ -210,7 +436,9 @@ function Canvas() {
         <Controls />
         <MiniMap
           nodeColor={(n) =>
-            n.type === "scene"
+            n.type === "act"
+              ? "var(--vscode-editorWidget-border, #888)"
+              : n.type === "scene"
               ? (n.data as DiagramNodeVM).isInvalidRoot
                 ? "var(--vscode-errorForeground)"
                 : "#6ea8fe"

@@ -56,6 +56,8 @@ export interface Act {
   collapsed?: boolean; // diagram/tree collapsed state
   /** Canvas position of the act container node. */
   position?: { x: number; y: number };
+  /** Manual container size on the diagram (defaults applied if absent). */
+  size?: { width: number; height: number };
 }
 
 /** The full graph sidecar persisted next to the manuscript. */
@@ -141,6 +143,7 @@ export interface DiagramActVM {
   sceneIds: string[];
   collapsed: boolean;
   position: { x: number; y: number };
+  size?: { width: number; height: number };
   sceneCount: number;
 }
 
@@ -171,6 +174,7 @@ export type DiagramToHost =
   | { type: "connectActs"; sourceActId: string; targetActId: string }
   | { type: "setActCollapsed"; actId: string; collapsed: boolean }
   | { type: "moveActPosition"; actId: string; position: { x: number; y: number } }
+  | { type: "resizeAct"; actId: string; size: { width: number; height: number } }
   | { type: "moveSceneToAct"; sceneId: string; actId: string }
   | { type: "addSceneToAct"; actId: string };
 

@@ -174,6 +174,7 @@ export function buildDiagramState(
     sceneIds: a.sceneIds.slice(),
     collapsed: a.collapsed ?? false,
     position: a.position ?? { x: 0, y: 0 },
+    size: a.size,
     sceneCount: a.sceneIds.length,
   }));
 
