@@ -77,6 +77,11 @@
         "command": "flowManuscript.deleteNode",
         "title": "Delete",
         "icon": "$(trash)"
+      },
+      {
+        "command": "flowManuscript.moveSceneToAct",
+        "title": "Move to Act…",
+        "icon": "$(arrow-right)"
       }
     ],
     "viewsContainers": {
@@ -151,9 +156,14 @@
           "group": "1_modify"
         },
         {
+          "command": "flowManuscript.moveSceneToAct",
+          "when": "view == flowManuscript.tree && viewItem == node:scene",
+          "group": "inline@1"
+        },
+        {
           "command": "flowManuscript.deleteNode",
           "when": "view == flowManuscript.tree && viewItem == node:scene",
-          "group": "inline"
+          "group": "inline@2"
         },
         {
           "command": "flowManuscript.deleteNode",
@@ -164,6 +174,11 @@
           "command": "flowManuscript.deleteNode",
           "when": "view == flowManuscript.tree && viewItem == node:place",
           "group": "inline"
+        },
+        {
+          "command": "flowManuscript.moveSceneToAct",
+          "when": "view == flowManuscript.tree && viewItem == node:scene",
+          "group": "1_modify"
         },
         {
           "command": "flowManuscript.deleteNode",

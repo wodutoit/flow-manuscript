@@ -188,8 +188,16 @@ export type EditorToHost =
   | { type: "saveBody"; nodeId: string; body: string }
   | { type: "saveFrontmatter"; nodeId: string; frontmatter: Record<string, unknown> }
   | { type: "renameNode"; nodeId: string; newName: string }
+  | { type: "moveSceneToAct"; sceneId: string; actId: string }
   | { type: "requestDictionary" }
   | { type: "addCustomWord"; word: string };
+
+/** Minimal act info the editor needs to render its act selector. */
+export interface EditorActRef {
+  id: string;
+  name: string;
+  order: number;
+}
 
 // host -> Editor webview
 export type HostToEditor =
@@ -199,6 +207,9 @@ export type HostToEditor =
       kind: EditorKind;
       frontmatter: Record<string, unknown>;
       body: string;
+      /** For scenes: the act it belongs to and all acts (for the selector). */
+      actId?: string;
+      acts?: EditorActRef[];
     }
   | {
       type: "dictionary";

@@ -191,6 +191,42 @@ export async function activate(context: vscode.ExtensionContext) {
     )
   );
 
+  // --- command: move a scene to another act (from the tree) ----------------
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "flowManuscript.moveSceneToAct",
+      async (item?: { nodeId?: string; nodeKind?: string }) => {
+        const m = await ensureManager();
+        if (!m || !item?.nodeId) return;
+        const node = m.getNode(item.nodeId);
+        if (!node || node.kind !== "scene") return;
+        const current = m.actOfScene(item.nodeId);
+        const targets = m
+          .getActs()
+          .filter((a) => a.id !== current?.id);
+        if (targets.length === 0) {
+          vscode.window.showInformationMessage(
+            "There's no other act to move this scene to. Create another act first."
+          );
+          return;
+        }
+        const picked = await vscode.window.showQuickPick(
+          targets.map((a) => ({
+            label: `${a.order}. ${a.name}`,
+            actId: a.id,
+          })),
+          {
+            placeHolder: current
+              ? `Move "${node.name}" from “${current.name}” to…`
+              : `Move "${node.name}" to…`,
+          }
+        );
+        if (!picked) return;
+        await m.moveSceneToAct(item.nodeId, picked.actId);
+      }
+    )
+  );
+
   // --- commands: acts (invoked from the tree) ------------------------------
 
   /** The Scenes group '+' creates an act. */

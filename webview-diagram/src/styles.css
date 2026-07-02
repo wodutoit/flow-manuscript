@@ -67,6 +67,12 @@ body,
   font-weight: 600;
 }
 
+.toolbar__hint {
+  margin-left: auto;
+  opacity: 0.55;
+  font-size: 11px;
+}
+
 .react-flow {
   flex: 1;
 }
@@ -342,4 +348,11 @@ body,
 .react-flow__node-scene {
   z-index: 1;
   pointer-events: all;
+}
+
+/* ---- multi-selection ---- */
+/* Rubber-band selection box (Shift+drag on empty canvas). */
+.react-flow__selection {
+  background: color-mix(in srgb, var(--vscode-focusBorder) 15%, transparent);
+  border: 1px solid var(--vscode-focusBorder);
 }

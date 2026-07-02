@@ -90,12 +90,25 @@ export class EditorPanel {
     if (!node) return;
     const { frontmatter, body } = await this.manager.readDoc(node);
     this.panel.title = node.name;
+    // For scenes, include act context so the editor can show/change the act.
+    let actId: string | undefined;
+    let acts:
+      | { id: string; name: string; order: number }[]
+      | undefined;
+    if (node.kind === "scene") {
+      actId = this.manager.actOfScene(node.id)?.id;
+      acts = this.manager
+        .getActs()
+        .map((a) => ({ id: a.id, name: a.name, order: a.order }));
+    }
     this.post({
       type: "doc",
       nodeId: this.nodeId,
       kind: node.kind,
       frontmatter,
       body,
+      actId,
+      acts,
     });
   }
 
@@ -141,6 +154,10 @@ export class EditorPanel {
         break;
       case "renameNode":
         await this.manager.renameNode(m.nodeId, m.newName);
+        await this.sendDoc();
+        break;
+      case "moveSceneToAct":
+        await this.manager.moveSceneToAct(m.sceneId, m.actId);
         await this.sendDoc();
         break;
     }

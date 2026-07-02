@@ -234,6 +234,10 @@ function Canvas() {
   const sceneActRef = useRef<Map<string, string>>(new Map());
   const copiedIdRef = useRef<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
+  // Full current selection (ids), for multi-node drag persistence.
+  const selectedIdsRef = useRef<Set<string>>(new Set());
+  // Live view of nodes so drag-stop can read every selected node's position.
+  const nodesRef = useRef<Node[]>([]);
 
   useEffect(() => {
     const off = onHostMessage((msg) => {
@@ -246,6 +250,7 @@ function Canvas() {
         }
         sceneActRef.current = map;
         setNodes(laidOut);
+        nodesRef.current = laidOut;
         setEdges(layoutEdges(msg.state));
         setInvalidActCount(msg.state.invalidActIds.length);
       }
@@ -288,6 +293,12 @@ function Canvas() {
     [onNodesChange]
   );
 
+  // Mirror the latest nodes into a ref so drag-stop can read every selected
+  // node's current position for multi-node drag persistence.
+  useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
+
   // Drawing a connection. Act handles -> reorder acts; scene handles -> a scene
   // order/logical edge in the currently selected draw kind.
   const onConnect = useCallback(
@@ -302,11 +313,13 @@ function Canvas() {
     [drawKind]
   );
 
-  // Track selection for copy/duplicate (scenes only).
+  // Track selection: remember all selected ids (for multi-drag) and the single
+  // scene id used for copy/duplicate.
   const onSelectionChange = useCallback(
     ({ nodes: sel }: { nodes: Node[] }) => {
+      selectedIdsRef.current = new Set(sel.map((n) => n.id));
       const scene = sel.find((n) => n.type === "scene");
-      selectedIdRef.current = scene ? scene.id : null;
+      selectedIdRef.current = sel.length === 1 && scene ? scene.id : null;
     },
     []
   );
@@ -322,48 +335,77 @@ function Canvas() {
   }, []);
 
   // On drag stop:
-  //  - act: persist its new position
-  //  - scene: if dropped over a DIFFERENT act, move it there; otherwise persist
-  //    its new position within its current act (free layout).
-  const onNodeDragStop: NodeMouseHandler = useCallback((_e, node) => {
+  //  - Multiple nodes selected: persist each one's position (no cross-act move;
+  //    that's reserved for dragging a single scene, to keep it predictable).
+  //  - Single act: persist its position.
+  //  - Single scene: if dropped over a DIFFERENT act, move it there; otherwise
+  //    persist its new position within its current act (free layout).
+  const persistNodePosition = useCallback((node: Node) => {
     if (node.type === "act") {
       post({ type: "moveActPosition", actId: node.id, position: node.position });
-      return;
-    }
-    if (node.type === "scene") {
-      const currentActId = sceneActRef.current.get(node.id);
-      const parentRect = currentActId
-        ? actRectsRef.current.get(currentActId)
-        : undefined;
-      const abs =
-        node.positionAbsolute ?? {
-          x: (parentRect?.x ?? 0) + node.position.x,
-          y: (parentRect?.y ?? 0) + node.position.y,
-        };
-
-      // Which act does the drop point fall inside?
-      let targetActId: string | undefined;
-      for (const [actId, r] of actRectsRef.current) {
-        if (
-          abs.x >= r.x &&
-          abs.x <= r.x + r.w &&
-          abs.y >= r.y &&
-          abs.y <= r.y + r.h
-        ) {
-          targetActId = actId;
-          break;
-        }
-      }
-
-      if (targetActId && targetActId !== currentActId) {
-        post({ type: "moveSceneToAct", sceneId: node.id, actId: targetActId });
-      } else {
-        // Same act (or outside any act): persist the new position so the user's
-        // free layout sticks. node.position is relative to the parent act.
-        post({ type: "moveNode", nodeId: node.id, position: node.position });
-      }
+    } else if (node.type === "scene") {
+      post({ type: "moveNode", nodeId: node.id, position: node.position });
     }
   }, []);
+
+  const onNodeDragStop: NodeMouseHandler = useCallback(
+    (_e, node) => {
+      const selected = selectedIdsRef.current;
+
+      // Multi-node drag: persist positions for all selected act/scene nodes.
+      if (selected.size > 1) {
+        for (const n of nodesRef.current) {
+          if (!selected.has(n.id)) continue;
+          persistNodePosition(n);
+        }
+        return;
+      }
+
+      if (node.type === "act") {
+        post({
+          type: "moveActPosition",
+          actId: node.id,
+          position: node.position,
+        });
+        return;
+      }
+
+      if (node.type === "scene") {
+        const currentActId = sceneActRef.current.get(node.id);
+        const parentRect = currentActId
+          ? actRectsRef.current.get(currentActId)
+          : undefined;
+        const abs =
+          node.positionAbsolute ?? {
+            x: (parentRect?.x ?? 0) + node.position.x,
+            y: (parentRect?.y ?? 0) + node.position.y,
+          };
+
+        // Which act does the drop point fall inside?
+        let targetActId: string | undefined;
+        for (const [actId, r] of actRectsRef.current) {
+          if (
+            abs.x >= r.x &&
+            abs.x <= r.x + r.w &&
+            abs.y >= r.y &&
+            abs.y <= r.y + r.h
+          ) {
+            targetActId = actId;
+            break;
+          }
+        }
+
+        if (targetActId && targetActId !== currentActId) {
+          post({ type: "moveSceneToAct", sceneId: node.id, actId: targetActId });
+        } else {
+          // Same act (or outside any act): persist the new position so the
+          // user's free layout sticks. node.position is relative to the parent.
+          post({ type: "moveNode", nodeId: node.id, position: node.position });
+        }
+      }
+    },
+    [persistNodePosition]
+  );
 
   const onEdgesDelete = useCallback((deleted: Edge[]) => {
     for (const e of deleted) {
@@ -414,7 +456,11 @@ function Canvas() {
             {invalidActCount} act{invalidActCount === 1 ? "" : "s"} have more
             than one starting scene — each act should have exactly one.
           </div>
-        ) : null}
+        ) : (
+          <div className="toolbar__hint">
+            Shift+drag to select multiple; drag to move them together
+          </div>
+        )}
       </div>
 
       <ReactFlow
@@ -429,6 +475,12 @@ function Canvas() {
         onNodeDoubleClick={onNodeDoubleClick}
         onNodeDragStop={onNodeDragStop}
         onEdgesDelete={onEdgesDelete}
+        // Multi-select: Shift+drag on empty canvas rubber-band selects; Shift+
+        // click adds/removes individual nodes. Plain left-drag still pans.
+        selectionOnDrag={false}
+        selectionKeyCode={"Shift"}
+        multiSelectionKeyCode={"Shift"}
+        selectNodesOnDrag={false}
         fitView
         proOptions={{ hideAttribution: true }}
       >

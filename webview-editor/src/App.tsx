@@ -17,7 +17,7 @@ import {
   createSpellcheckPlugin,
   misspelledWordAt,
 } from "./spellcheckPlugin";
-import type { EditorKind } from "../../src/shared/types";
+import type { EditorKind, EditorActRef } from "../../src/shared/types";
 
 // Module-level singletons: one checker for the webview, and a holder for the
 // plugin's manual-refresh function so we can re-run checking after load.
@@ -49,6 +49,8 @@ interface DocState {
   kind: EditorKind;
   frontmatter: Record<string, unknown>;
   body: string;
+  actId?: string;
+  acts?: EditorActRef[];
 }
 
 function useDebouncedCallback<T extends (...a: any[]) => void>(fn: T, ms: number) {
@@ -119,6 +121,8 @@ export default function App() {
           kind: msg.kind,
           frontmatter: msg.frontmatter,
           body: msg.body,
+          actId: msg.actId,
+          acts: msg.acts,
         };
         setDoc(next);
         setFm(msg.frontmatter);
@@ -206,6 +210,35 @@ export default function App() {
   return (
     <div className="editor">
       <header className="fm">
+        {doc.kind === "scene" && doc.acts ? (
+          <label className="fm__field" key="__act">
+            <span className="fm__label">Act</span>
+            <select
+              value={doc.actId ?? ""}
+              onChange={(e) => {
+                const actId = e.target.value;
+                if (actId && actId !== doc.actId) {
+                  post({
+                    type: "moveSceneToAct",
+                    sceneId: doc.nodeId,
+                    actId,
+                  });
+                }
+              }}
+            >
+              {!doc.actId ? (
+                <option value="" disabled>
+                  —
+                </option>
+              ) : null}
+              {doc.acts.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.order}. {a.name}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         {fields.map((f) => (
           <label className="fm__field" key={f.key}>
             <span className="fm__label">{f.label}</span>
