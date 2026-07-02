@@ -2,7 +2,7 @@
   "name": "flow-manuscript",
   "displayName": "Flow Manuscript",
   "description": "Plan and write novels as a scene flow diagram with a rich Markdown editor.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "local",
   "license": "MIT",
   "repository": {
@@ -34,11 +34,6 @@
         "icon": "$(type-hierarchy)"
       },
       {
-        "command": "flowManuscript.addScene",
-        "title": "Add Scene",
-        "icon": "$(add)"
-      },
-      {
         "command": "flowManuscript.addCharacter",
         "title": "Add Character",
         "icon": "$(add)"
@@ -47,6 +42,41 @@
         "command": "flowManuscript.addPlace",
         "title": "Add Place",
         "icon": "$(add)"
+      },
+      {
+        "command": "flowManuscript.addAct",
+        "title": "Add Act",
+        "icon": "$(add)"
+      },
+      {
+        "command": "flowManuscript.addSceneToAct",
+        "title": "Add Scene to Act",
+        "icon": "$(add)"
+      },
+      {
+        "command": "flowManuscript.moveActUp",
+        "title": "Move Act Up",
+        "icon": "$(arrow-up)"
+      },
+      {
+        "command": "flowManuscript.moveActDown",
+        "title": "Move Act Down",
+        "icon": "$(arrow-down)"
+      },
+      {
+        "command": "flowManuscript.renameAct",
+        "title": "Rename Act",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "flowManuscript.deleteAct",
+        "title": "Delete Act",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "flowManuscript.deleteNode",
+        "title": "Delete",
+        "icon": "$(trash)"
       }
     ],
     "viewsContainers": {
@@ -76,7 +106,7 @@
       ],
       "view/item/context": [
         {
-          "command": "flowManuscript.addScene",
+          "command": "flowManuscript.addAct",
           "when": "view == flowManuscript.tree && viewItem == group:scene",
           "group": "inline"
         },
@@ -89,6 +119,56 @@
           "command": "flowManuscript.addPlace",
           "when": "view == flowManuscript.tree && viewItem == group:place",
           "group": "inline"
+        },
+        {
+          "command": "flowManuscript.addSceneToAct",
+          "when": "view == flowManuscript.tree && viewItem == act",
+          "group": "inline@1"
+        },
+        {
+          "command": "flowManuscript.moveActUp",
+          "when": "view == flowManuscript.tree && viewItem == act",
+          "group": "inline@2"
+        },
+        {
+          "command": "flowManuscript.moveActDown",
+          "when": "view == flowManuscript.tree && viewItem == act",
+          "group": "inline@3"
+        },
+        {
+          "command": "flowManuscript.deleteAct",
+          "when": "view == flowManuscript.tree && viewItem == act",
+          "group": "inline@4"
+        },
+        {
+          "command": "flowManuscript.renameAct",
+          "when": "view == flowManuscript.tree && viewItem == act",
+          "group": "1_modify"
+        },
+        {
+          "command": "flowManuscript.deleteAct",
+          "when": "view == flowManuscript.tree && viewItem == act",
+          "group": "1_modify"
+        },
+        {
+          "command": "flowManuscript.deleteNode",
+          "when": "view == flowManuscript.tree && viewItem == node:scene",
+          "group": "inline"
+        },
+        {
+          "command": "flowManuscript.deleteNode",
+          "when": "view == flowManuscript.tree && viewItem == node:character",
+          "group": "inline"
+        },
+        {
+          "command": "flowManuscript.deleteNode",
+          "when": "view == flowManuscript.tree && viewItem == node:place",
+          "group": "inline"
+        },
+        {
+          "command": "flowManuscript.deleteNode",
+          "when": "view == flowManuscript.tree && (viewItem == node:scene || viewItem == node:character || viewItem == node:place)",
+          "group": "1_modify"
         }
       ]
     }

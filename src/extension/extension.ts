@@ -4,7 +4,7 @@ import { ManuscriptTreeProvider } from "./treeProvider";
 import { DiagramPanel } from "./diagramPanel";
 import { EditorPanel } from "./editorPanel";
 import { toSlug } from "./frontmatter";
-import type { ManuscriptMeta, NodeKind } from "../shared/types";
+import type { ManuscriptMeta } from "../shared/types";
 
 let manager: ManuscriptManager | undefined;
 let tree: ManuscriptTreeProvider | undefined;
@@ -138,29 +138,157 @@ export async function activate(context: vscode.ExtensionContext) {
   );
 
   // --- commands: add nodes from the tree context menu ----------------------
-  const addFrom = async (kind: NodeKind) => {
-    const m = await ensureManager();
-    if (!m) return;
-    // Reuse the diagram panel's prompt path by opening the diagram if needed,
-    // but we can also prompt directly here for tree-initiated adds.
-    const name = await vscode.window.showInputBox({
-      prompt: `${kind[0].toUpperCase() + kind.slice(1)} name`,
+  const promptName = async (label: string) =>
+    vscode.window.showInputBox({
+      prompt: `${label} name`,
       validateInput: (v) => (v.trim() ? undefined : "Name is required"),
     });
+
+  const addEntity = async (kind: "character" | "place") => {
+    const m = await ensureManager();
+    if (!m) return;
+    const name = await promptName(kind[0].toUpperCase() + kind.slice(1));
     if (!name) return;
-    let pov: string | undefined;
-    if (kind === "scene") {
-      pov = await vscode.window.showInputBox({ prompt: "POV character (optional)" });
-      if (pov === undefined) return;
-    }
-    await m.createNode(kind, name.trim(), { pov: pov?.trim() });
+    await m.createNode(kind, name.trim(), {});
   };
   context.subscriptions.push(
-    vscode.commands.registerCommand("flowManuscript.addScene", () => addFrom("scene")),
     vscode.commands.registerCommand("flowManuscript.addCharacter", () =>
-      addFrom("character")
+      addEntity("character")
     ),
-    vscode.commands.registerCommand("flowManuscript.addPlace", () => addFrom("place"))
+    vscode.commands.registerCommand("flowManuscript.addPlace", () =>
+      addEntity("place")
+    )
+  );
+
+  // --- command: delete a scene/character/place from the tree ---------------
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "flowManuscript.deleteNode",
+      async (item?: { nodeId?: string; nodeKind?: string }) => {
+        const m = await ensureManager();
+        if (!m || !item?.nodeId) return;
+        const node = m.getNode(item.nodeId);
+        if (!node) return;
+        const label =
+          node.kind === "scene"
+            ? "Scene"
+            : node.kind === "character"
+            ? "Character"
+            : "Place";
+        const choice = await vscode.window.showWarningMessage(
+          `Delete this ${label} "${node.name}"?`,
+          {
+            modal: true,
+            detail:
+              "The underlying file will be deleted and this cannot be undone.",
+          },
+          "Delete"
+        );
+        if (choice === "Delete") {
+          await m.deleteNode(item.nodeId, { deleteFile: true });
+        }
+      }
+    )
+  );
+
+  // --- commands: acts (invoked from the tree) ------------------------------
+
+  /** The Scenes group '+' creates an act. */
+  context.subscriptions.push(
+    vscode.commands.registerCommand("flowManuscript.addAct", async () => {
+      const m = await ensureManager();
+      if (!m) return;
+      const name = await vscode.window.showInputBox({
+        prompt: "Act name",
+        placeHolder: "e.g. Setup, Confrontation, Resolution",
+        validateInput: (v) => (v.trim() ? undefined : "Name is required"),
+      });
+      if (!name) return;
+      await m.createAct(name.trim());
+    })
+  );
+
+  /** Hovering an act shows '+' to add a scene into it. */
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "flowManuscript.addSceneToAct",
+      async (item?: { actId?: string }) => {
+        const m = await ensureManager();
+        if (!m || !item?.actId) return;
+        const name = await promptName("Scene");
+        if (!name) return;
+        const pov = await vscode.window.showInputBox({
+          prompt: "POV character (optional)",
+        });
+        if (pov === undefined) return;
+        try {
+          await m.createNode("scene", name.trim(), {
+            pov: pov.trim(),
+            actId: item.actId,
+          });
+        } catch (e: any) {
+          if (e?.message === "no-act") {
+            vscode.window.showErrorMessage(
+              "That act no longer exists. Try again."
+            );
+          } else throw e;
+        }
+      }
+    )
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "flowManuscript.renameAct",
+      async (item?: { actId?: string }) => {
+        const m = await ensureManager();
+        if (!m || !item?.actId) return;
+        const act = m.getAct(item.actId);
+        if (!act) return;
+        const name = await vscode.window.showInputBox({
+          prompt: "Act name",
+          value: act.name,
+          validateInput: (v) => (v.trim() ? undefined : "Name is required"),
+        });
+        if (name) await m.renameAct(item.actId, name.trim());
+      }
+    ),
+    vscode.commands.registerCommand(
+      "flowManuscript.moveActUp",
+      async (item?: { actId?: string }) => {
+        const m = await ensureManager();
+        if (m && item?.actId) await m.moveAct(item.actId, "up");
+      }
+    ),
+    vscode.commands.registerCommand(
+      "flowManuscript.moveActDown",
+      async (item?: { actId?: string }) => {
+        const m = await ensureManager();
+        if (m && item?.actId) await m.moveAct(item.actId, "down");
+      }
+    ),
+    vscode.commands.registerCommand(
+      "flowManuscript.deleteAct",
+      async (item?: { actId?: string }) => {
+        const m = await ensureManager();
+        if (!m || !item?.actId) return;
+        const act = m.getAct(item.actId);
+        if (!act) return;
+        const count = act.sceneIds.length;
+        const detail =
+          count > 0
+            ? `This will also delete all ${count} scene${
+                count === 1 ? "" : "s"
+              } in this act and their files. This cannot be undone.`
+            : "This act has no scenes. This cannot be undone.";
+        const choice = await vscode.window.showWarningMessage(
+          `Delete act "${act.name}"?`,
+          { modal: true, detail },
+          "Delete"
+        );
+        if (choice === "Delete") await m.deleteAct(item.actId);
+      }
+    )
   );
 
   // Auto-init the tree if the open folder looks like a manuscript. We treat a

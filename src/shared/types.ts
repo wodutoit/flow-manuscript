@@ -32,7 +32,8 @@ export interface FlowNode {
   position: { x: number; y: number };
 }
 
-/** An edge as stored in outline.flow.json. Only ever connects two scene nodes. */
+/** An edge as stored in outline.flow.json. Only ever connects two scene nodes
+ * that belong to the same act. */
 export interface FlowEdge {
   id: string;
   kind: EdgeKind;
@@ -40,9 +41,27 @@ export interface FlowEdge {
   target: string; // FlowNode.id
 }
 
+/**
+ * An act (a.k.a. part) groups scenes and defines story structure. Acts live
+ * only in the flow file — they have no backing .md file. Scene membership is
+ * the `sceneIds` list; order within the act is defined by the scene order
+ * edges among those scenes. Overall story order is acts by `order`, then the
+ * scene chain within each act.
+ */
+export interface Act {
+  id: string; // stable uuid
+  name: string; // display name, e.g. "Setup"
+  order: number; // 1-based; managed automatically
+  sceneIds: string[]; // FlowNode ids of scenes in this act (membership only)
+  collapsed?: boolean; // diagram/tree collapsed state
+  /** Canvas position of the act container node. */
+  position?: { x: number; y: number };
+}
+
 /** The full graph sidecar persisted next to the manuscript. */
 export interface FlowDocument {
-  version: 1;
+  version: 2;
+  acts: Act[];
   nodes: FlowNode[];
   edges: FlowEdge[];
 }
@@ -100,34 +119,60 @@ export interface ParsedDoc<T = Record<string, unknown>> {
 
 /** Node view-model enriched with data the diagram needs to render (derived, not stored). */
 export interface DiagramNodeVM extends FlowNode {
-  /** Derived story number for scenes (1-based). Undefined for non-scenes. */
+  /** Derived story number for scenes (1-based, global across acts). Undefined for non-scenes. */
   sceneNumber?: number;
-  /** True when this scene has no incoming "order" edge. */
+  /** Scene number within its own act (1-based). */
+  actSceneNumber?: number;
+  /** The act this scene belongs to, if any. */
+  actId?: string;
+  /** True when this scene has no incoming "order" edge from within its act. */
   isRoot?: boolean;
-  /** True when this node should render red (multiple roots exist). */
+  /** True when this node should render red (multiple roots in the same act). */
   isInvalidRoot?: boolean;
   status?: SceneStatus | EntityStatus;
   pov?: string;
 }
 
+/** Act view-model for the diagram: the stored act plus derived numbering. */
+export interface DiagramActVM {
+  id: string;
+  name: string;
+  order: number;
+  sceneIds: string[];
+  collapsed: boolean;
+  position: { x: number; y: number };
+  sceneCount: number;
+}
+
 export interface DiagramState {
   nodes: DiagramNodeVM[];
   edges: FlowEdge[];
-  /** Number of scene roots; when > 1 the graph is in an invalid state. */
-  rootCount: number;
+  acts: DiagramActVM[];
+  /** Per-act root problems: act ids that have more than one starting scene. */
+  invalidActIds: string[];
 }
 
 // Diagram webview -> host
 export type DiagramToHost =
   | { type: "ready" }
-  | { type: "addNode"; kind: NodeKind; afterNodeId?: string }
+  | { type: "addNode"; kind: NodeKind; afterNodeId?: string; actId?: string }
   | { type: "openNode"; nodeId: string }
   | { type: "moveNode"; nodeId: string; position: { x: number; y: number } }
   | { type: "connect"; source: string; target: string; kind: EdgeKind }
   | { type: "deleteEdge"; edgeId: string }
   | { type: "deleteNode"; nodeId: string }
   | { type: "duplicateNode"; nodeId: string }
-  | { type: "setEdgeKind"; edgeId: string; kind: EdgeKind };
+  | { type: "setEdgeKind"; edgeId: string; kind: EdgeKind }
+  // act operations
+  | { type: "addAct" }
+  | { type: "renameAct"; actId: string }
+  | { type: "deleteAct"; actId: string }
+  | { type: "moveAct"; actId: string; direction: "up" | "down" }
+  | { type: "connectActs"; sourceActId: string; targetActId: string }
+  | { type: "setActCollapsed"; actId: string; collapsed: boolean }
+  | { type: "moveActPosition"; actId: string; position: { x: number; y: number } }
+  | { type: "moveSceneToAct"; sceneId: string; actId: string }
+  | { type: "addSceneToAct"; actId: string };
 
 // host -> Diagram webview
 export type HostToDiagram = { type: "state"; state: DiagramState };

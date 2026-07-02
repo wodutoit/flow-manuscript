@@ -57,7 +57,7 @@ function Canvas() {
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   // The kind of edge the next drawn connection becomes.
   const [drawKind, setDrawKind] = useState<EdgeKind>("order");
-  const [rootCount, setRootCount] = useState(0);
+  const [invalidActCount, setInvalidActCount] = useState(0);
   // Id of the node most recently copied (Ctrl/Cmd+C), for paste (Ctrl/Cmd+V).
   const copiedIdRef = useRef<string | null>(null);
   const selectedIdRef = useRef<string | null>(null);
@@ -67,7 +67,7 @@ function Canvas() {
       if (msg.type === "state") {
         setNodes(toFlowNodes(msg.state.nodes));
         setEdges(toFlowEdges(msg.state));
-        setRootCount(msg.state.rootCount);
+        setInvalidActCount(msg.state.invalidActIds.length);
       }
     });
     post({ type: "ready" });
@@ -182,10 +182,10 @@ function Canvas() {
             Logical (dashed)
           </button>
         </div>
-        {rootCount > 1 ? (
+        {invalidActCount > 0 ? (
           <div className="toolbar__warn">
-            {rootCount} scenes have no incoming connection — there should
-            be exactly one Scene 1.
+            {invalidActCount} act{invalidActCount === 1 ? "" : "s"} have more
+            than one starting scene — each act should have exactly one.
           </div>
         ) : null}
       </div>

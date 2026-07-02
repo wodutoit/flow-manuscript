@@ -1,7 +1,7 @@
 ---
 scene: 000
 chapter: 1
-# chapter_title: <Chapter Title>   # only set when this chapter has 2+ scenes; with one scene per chapter, the scene's `name` below is used as the chapter title at compile time
+part: 1 <Part Name>
 name: <Scene Name>
 pov: <POV Character>
 goal: <One-line statement of what the POV character wants in this scene>

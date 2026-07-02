@@ -11,6 +11,7 @@ import type {
   FlowDocument,
   FlowNode,
   FlowEdge,
+  Act,
   NodeKind,
   EdgeKind,
   ManuscriptMeta,
@@ -18,7 +19,7 @@ import type {
 } from "../shared/types";
 
 const FLOW_FILE = "outline.flow.json";
-const EMPTY_FLOW: FlowDocument = { version: 1, nodes: [], edges: [] };
+const EMPTY_FLOW: FlowDocument = { version: 2, acts: [], nodes: [], edges: [] };
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -59,12 +60,99 @@ export class ManuscriptManager {
   async load(): Promise<void> {
     try {
       const raw = dec.decode(await vscode.workspace.fs.readFile(this.flowUri()));
-      this.flow = JSON.parse(raw) as FlowDocument;
-      if (!this.flow.version) this.flow = { ...EMPTY_FLOW, ...this.flow };
+      const parsed = JSON.parse(raw) as Partial<FlowDocument> & {
+        nodes?: FlowNode[];
+        edges?: FlowEdge[];
+      };
+      this.flow = this.migrate(parsed);
     } catch {
-      this.flow = { version: 1, nodes: [], edges: [] };
+      this.flow = { version: 2, acts: [], nodes: [], edges: [] };
       await this.persist();
     }
+  }
+
+  /**
+   * Normalize any older flow document to the current v2 shape. A v1 file has
+   * nodes/edges but no `acts`; we wrap all existing scenes into a single
+   * "Act 1", preserving their current chain order. Scene .md files are never
+   * touched by this.
+   */
+  private migrate(
+    parsed: Partial<FlowDocument> & { nodes?: FlowNode[]; edges?: FlowEdge[] }
+  ): FlowDocument {
+    const nodes = parsed.nodes ?? [];
+    const edges = parsed.edges ?? [];
+
+    if (Array.isArray(parsed.acts)) {
+      // Already v2 (or close enough) — ensure required fields exist.
+      return {
+        version: 2,
+        acts: parsed.acts.map((a, i) => ({
+          id: a.id ?? randomUUID(),
+          name: a.name ?? `Act ${i + 1}`,
+          order: typeof a.order === "number" ? a.order : i + 1,
+          sceneIds: Array.isArray(a.sceneIds) ? a.sceneIds : [],
+          collapsed: a.collapsed ?? false,
+          position: a.position,
+        })),
+        nodes,
+        edges,
+      };
+    }
+
+    // v1 -> v2 migration. Order the existing scenes by walking the old global
+    // chain so "Act 1" preserves the sequence the author already had.
+    const legacyDoc: FlowDocument = { version: 2, acts: [], nodes, edges };
+    const sceneIds = this.legacyOrderedSceneIds(legacyDoc);
+
+    const migrated: FlowDocument = {
+      version: 2,
+      nodes,
+      edges,
+      acts:
+        sceneIds.length > 0
+          ? [
+              {
+                id: randomUUID(),
+                name: "Act 1",
+                order: 1,
+                sceneIds,
+                collapsed: false,
+              },
+            ]
+          : [],
+    };
+    return migrated;
+  }
+
+  /**
+   * v1 ordering helper: walk order edges globally (single-root assumption of
+   * the old model) to produce a stable scene sequence for migration.
+   */
+  private legacyOrderedSceneIds(doc: FlowDocument): string[] {
+    const scenes = doc.nodes.filter((n) => n.kind === "scene");
+    const sceneSet = new Set(scenes.map((s) => s.id));
+    const nextOf = new Map<string, string>();
+    const hasIncoming = new Set<string>();
+    for (const e of doc.edges) {
+      if (e.kind !== "order") continue;
+      if (!nextOf.has(e.source)) nextOf.set(e.source, e.target);
+      if (sceneSet.has(e.target)) hasIncoming.add(e.target);
+    }
+    const roots = scenes.map((s) => s.id).filter((id) => !hasIncoming.has(id));
+    const visited = new Set<string>();
+    const out: string[] = [];
+    const walk = (start: string) => {
+      let cur: string | undefined = start;
+      while (cur && !visited.has(cur)) {
+        visited.add(cur);
+        out.push(cur);
+        cur = nextOf.get(cur);
+      }
+    };
+    for (const r of [...roots].sort((a, b) => (a < b ? -1 : 1))) walk(r);
+    for (const s of scenes) if (!visited.has(s.id)) walk(s.id);
+    return out;
   }
 
   private async persist(): Promise<void> {
@@ -239,15 +327,18 @@ export class ManuscriptManager {
       });
     }
 
-    // Split ordered vs unordered; chain the ordered ones.
+    // Split ordered vs unordered; chain the ordered ones. All scenes go into a
+    // single "Act 1" (membership), preserving the resolved order.
     const ordered = scenes
       .filter((s) => s.order !== undefined)
       .sort((a, b) => (a.order! - b.order!) || a.node.file.localeCompare(b.node.file));
     const unordered = scenes.filter((s) => s.order === undefined);
 
+    const actSceneIds: string[] = [];
     ordered.forEach((s, i) => {
       s.node.position = { x: 80 + i * 220, y: 80 };
       nodes.push(s.node);
+      actSceneIds.push(s.node.id);
       if (i > 0) {
         edges.push({
           id: randomUUID(),
@@ -260,6 +351,7 @@ export class ManuscriptManager {
     unordered.forEach((s, i) => {
       s.node.position = { x: 80 + i * 220, y: 200 };
       nodes.push(s.node);
+      actSceneIds.push(s.node.id);
     });
 
     // --- characters ---
@@ -292,7 +384,20 @@ export class ManuscriptManager {
       });
     }
 
-    const doc: FlowDocument = { version: 1, nodes, edges };
+    const acts: Act[] =
+      actSceneIds.length > 0
+        ? [
+            {
+              id: randomUUID(),
+              name: "Act 1",
+              order: 1,
+              sceneIds: actSceneIds,
+              collapsed: false,
+            },
+          ]
+        : [];
+
+    const doc: FlowDocument = { version: 2, acts, nodes, edges };
     await vscode.workspace.fs.writeFile(
       flowUri,
       enc.encode(JSON.stringify(doc, null, 2) + "\n")
@@ -310,6 +415,182 @@ export class ManuscriptManager {
 
   getNode(id: string): FlowNode | undefined {
     return this.flow.nodes.find((n) => n.id === id);
+  }
+
+  // -- acts ------------------------------------------------------------------
+
+  getActs(): Act[] {
+    return [...this.flow.acts].sort((a, b) => a.order - b.order);
+  }
+
+  getAct(id: string): Act | undefined {
+    return this.flow.acts.find((a) => a.id === id);
+  }
+
+  /** The act a scene belongs to, if any. */
+  actOfScene(sceneId: string): Act | undefined {
+    return this.flow.acts.find((a) => a.sceneIds.includes(sceneId));
+  }
+
+  private renumberActs() {
+    this.getActs().forEach((a, i) => (a.order = i + 1));
+  }
+
+  /** Create a new act at the end. Returns it. */
+  async createAct(name: string): Promise<Act> {
+    const act: Act = {
+      id: randomUUID(),
+      name: name.trim() || `Act ${this.flow.acts.length + 1}`,
+      order: this.flow.acts.length + 1,
+      sceneIds: [],
+      collapsed: false,
+    };
+    this.flow.acts.push(act);
+    this.renumberActs();
+    await this.persist();
+    this._onDidChange.fire();
+    return act;
+  }
+
+  async renameAct(id: string, name: string) {
+    const act = this.getAct(id);
+    if (!act || !name.trim()) return;
+    act.name = name.trim();
+    await this.persist();
+    this._onDidChange.fire();
+  }
+
+  /** Move an act up or down in the ordering. */
+  async moveAct(id: string, direction: "up" | "down") {
+    const ordered = this.getActs();
+    const idx = ordered.findIndex((a) => a.id === id);
+    if (idx < 0) return;
+    const swapWith = direction === "up" ? idx - 1 : idx + 1;
+    if (swapWith < 0 || swapWith >= ordered.length) return;
+    const a = ordered[idx];
+    const b = ordered[swapWith];
+    const tmp = a.order;
+    a.order = b.order;
+    b.order = tmp;
+    this.renumberActs();
+    await this.syncSceneNumbers();
+    await this.persist();
+    this._onDidChange.fire();
+  }
+
+  /** Reorder acts by connecting one act to another (source comes before target). */
+  async connectActs(sourceActId: string, targetActId: string) {
+    if (sourceActId === targetActId) return;
+    const ordered = this.getActs();
+    const src = ordered.find((a) => a.id === sourceActId);
+    const tgt = ordered.find((a) => a.id === targetActId);
+    if (!src || !tgt) return;
+    // Place source immediately before target in the ordering.
+    const without = ordered.filter((a) => a.id !== sourceActId);
+    const tgtIdx = without.findIndex((a) => a.id === targetActId);
+    without.splice(tgtIdx, 0, src);
+    without.forEach((a, i) => (a.order = i + 1));
+    await this.syncSceneNumbers();
+    await this.persist();
+    this._onDidChange.fire();
+  }
+
+  async setActCollapsed(id: string, collapsed: boolean) {
+    const act = this.getAct(id);
+    if (!act) return;
+    act.collapsed = collapsed;
+    await this.persist();
+    this._onDidChange.fire();
+  }
+
+  async moveActPosition(id: string, position: { x: number; y: number }) {
+    const act = this.getAct(id);
+    if (!act) return;
+    act.position = position;
+    await this.persist();
+    // cosmetic; no event
+  }
+
+  /**
+   * Delete an act and ALL its scenes (files included). Returns the number of
+   * scenes removed so the caller can report it. The caller is responsible for
+   * confirming with the user first.
+   */
+  async deleteAct(id: string): Promise<number> {
+    const act = this.getAct(id);
+    if (!act) return 0;
+    const sceneIds = [...act.sceneIds];
+    // Remove the scenes (and their files) first.
+    for (const sid of sceneIds) {
+      const node = this.getNode(sid);
+      if (!node) continue;
+      this.flow.nodes = this.flow.nodes.filter((n) => n.id !== sid);
+      this.flow.edges = this.flow.edges.filter(
+        (e) => e.source !== sid && e.target !== sid
+      );
+      try {
+        await vscode.workspace.fs.delete(this.nodeUri(node), { useTrash: true });
+      } catch {
+        /* already gone */
+      }
+    }
+    this.flow.acts = this.flow.acts.filter((a) => a.id !== id);
+    this.renumberActs();
+    await this.syncSceneNumbers();
+    await this.persist();
+    this._onDidChange.fire();
+    return sceneIds.length;
+  }
+
+  /** Move a scene from its current act into another act (appended to its chain). */
+  async moveSceneToAct(sceneId: string, actId: string) {
+    const node = this.getNode(sceneId);
+    const target = this.getAct(actId);
+    if (!node || node.kind !== "scene" || !target) return;
+    const current = this.actOfScene(sceneId);
+    if (current?.id === actId) return;
+
+    // Remove any order edges that crossed the old act boundary (all its edges,
+    // since edges are intra-act only). Detach cleanly.
+    this.flow.edges = this.flow.edges.filter(
+      (e) =>
+        !(
+          (e.source === sceneId || e.target === sceneId) && e.kind === "order"
+        )
+    );
+    if (current) {
+      current.sceneIds = current.sceneIds.filter((s) => s !== sceneId);
+    }
+    // Append to the target act, chaining after its current last scene.
+    const lastId = this.lastSceneOfAct(target);
+    target.sceneIds.push(sceneId);
+    if (lastId) {
+      this.flow.edges.push({
+        id: randomUUID(),
+        kind: "order",
+        source: lastId,
+        target: sceneId,
+      });
+    }
+    await this.syncSceneNumbers();
+    await this.persist();
+    this._onDidChange.fire();
+  }
+
+  /** The last scene in an act's chain (or undefined if empty). */
+  private lastSceneOfAct(act: Act): string | undefined {
+    if (act.sceneIds.length === 0) return undefined;
+    const members = new Set(act.sceneIds);
+    const hasOutgoing = new Set<string>();
+    for (const e of this.flow.edges) {
+      if (e.kind === "order" && members.has(e.source) && members.has(e.target)) {
+        hasOutgoing.add(e.source);
+      }
+    }
+    // The tail is a member with no outgoing intra-act order edge. Prefer one
+    // that is reachable; fall back to the last in the list.
+    const tail = act.sceneIds.find((s) => !hasOutgoing.has(s));
+    return tail ?? act.sceneIds[act.sceneIds.length - 1];
   }
 
   nodeUri(node: FlowNode): vscode.Uri {
@@ -338,8 +619,21 @@ export class ManuscriptManager {
   async createNode(
     kind: NodeKind,
     name: string,
-    extra: { pov?: string; afterNodeId?: string } = {}
+    extra: { pov?: string; afterNodeId?: string; actId?: string } = {}
   ): Promise<FlowNode> {
+    // Scenes must belong to an act. Resolve the target act up front.
+    let targetAct: Act | undefined;
+    if (kind === "scene") {
+      targetAct = extra.actId ? this.getAct(extra.actId) : undefined;
+      // If created after an existing scene, inherit that scene's act.
+      if (!targetAct && extra.afterNodeId) {
+        targetAct = this.actOfScene(extra.afterNodeId);
+      }
+      if (!targetAct) {
+        throw new Error("no-act");
+      }
+    }
+
     const folder = this.folderFor(kind);
     const stem = await this.uniqueStem(folder, toSlug(name));
     const rel = `${folder}/${stem}.md`;
@@ -369,9 +663,15 @@ export class ManuscriptManager {
     };
     this.flow.nodes.push(node);
 
-    // If created after another scene, insert an order edge and rewire.
-    if (kind === "scene" && extra.afterNodeId) {
-      this.insertAfter(extra.afterNodeId, node.id);
+    if (kind === "scene" && targetAct) {
+      // Determine which scene to chain after: explicit afterNodeId (if it's in
+      // this act), else the act's current last scene.
+      let afterId = extra.afterNodeId;
+      if (!afterId || !targetAct.sceneIds.includes(afterId)) {
+        afterId = this.lastSceneOfAct(targetAct);
+      }
+      targetAct.sceneIds.push(node.id);
+      if (afterId) this.insertAfter(afterId, node.id);
     }
 
     await this.syncSceneNumbers();
@@ -412,6 +712,13 @@ export class ManuscriptManager {
       position: { x: src.position.x + 40, y: src.position.y + 40 },
     };
     this.flow.nodes.push(node);
+
+    // A duplicated scene joins the same act as its source (unconnected within
+    // it), preserving the "every scene is in an act" invariant.
+    if (src.kind === "scene") {
+      const act = this.actOfScene(src.id);
+      if (act) act.sceneIds.push(node.id);
+    }
 
     await this.syncSceneNumbers();
     await this.persist();
@@ -572,6 +879,10 @@ export class ManuscriptManager {
     // Only scenes participate in edges.
     if (!s || !t || s.kind !== "scene" || t.kind !== "scene") return;
     if (source === target) return;
+    // Scenes may only connect within the same act (no cross-act edges).
+    const sa = this.actOfScene(source);
+    const ta = this.actOfScene(target);
+    if (!sa || !ta || sa.id !== ta.id) return;
     // Prevent duplicate identical edges.
     const dup = this.flow.edges.some(
       (e) => e.kind === kind && e.source === source && e.target === target
@@ -616,6 +927,12 @@ export class ManuscriptManager {
     this.flow.edges = this.flow.edges.filter(
       (e) => e.source !== id && e.target !== id
     );
+    // Remove from any act membership.
+    for (const act of this.flow.acts) {
+      const before = act.sceneIds.length;
+      act.sceneIds = act.sceneIds.filter((s) => s !== id);
+      if (act.sceneIds.length !== before) break;
+    }
     if (opts.deleteFile) {
       try {
         await vscode.workspace.fs.delete(this.nodeUri(node), { useTrash: true });
