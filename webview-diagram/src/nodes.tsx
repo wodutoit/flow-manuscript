@@ -133,6 +133,15 @@ export function ActNode({
             +
           </button>
           <button
+            title="Arrange scenes: tidy them into a stack and fit the box"
+            onClick={(e) => {
+              e.stopPropagation();
+              post({ type: "arrangeAct", actId: id });
+            }}
+          >
+            {"\u2921"}
+          </button>
+          <button
             title="Rename act"
             onClick={(e) => {
               e.stopPropagation();

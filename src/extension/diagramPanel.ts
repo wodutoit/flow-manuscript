@@ -144,6 +144,9 @@ export class DiagramPanel {
       case "resizeAct":
         await this.manager.resizeAct(m.actId, m.size);
         break;
+      case "arrangeAct":
+        await this.manager.arrangeAct(m.actId);
+        break;
       case "moveSceneToAct":
         await this.manager.moveSceneToAct(m.sceneId, m.actId);
         break;

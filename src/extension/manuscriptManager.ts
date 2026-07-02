@@ -85,7 +85,7 @@ export class ManuscriptManager {
 
     if (Array.isArray(parsed.acts)) {
       // Already v2 (or close enough) — ensure required fields exist.
-      return {
+      const doc: FlowDocument = {
         version: 2,
         acts: parsed.acts.map((a, i) => ({
           id: a.id ?? randomUUID(),
@@ -99,6 +99,8 @@ export class ManuscriptManager {
         nodes,
         edges,
       };
+      this.normalizeScenePositions(doc);
+      return doc;
     }
 
     // v1 -> v2 migration. Order the existing scenes by walking the old global
@@ -336,8 +338,14 @@ export class ManuscriptManager {
     const unordered = scenes.filter((s) => s.order === undefined);
 
     const actSceneIds: string[] = [];
+    // Scene positions are RELATIVE to their (single) act container. Stack the
+    // ordered scenes vertically; place unordered ones in a second column.
+    const REL_X = 16;
+    const REL_X2 = 16 + 200;
+    const REL_TOP = 60;
+    const REL_STEP = 78;
     ordered.forEach((s, i) => {
-      s.node.position = { x: 80 + i * 220, y: 80 };
+      s.node.position = { x: REL_X, y: REL_TOP + i * REL_STEP };
       nodes.push(s.node);
       actSceneIds.push(s.node.id);
       if (i > 0) {
@@ -350,7 +358,7 @@ export class ManuscriptManager {
       }
     });
     unordered.forEach((s, i) => {
-      s.node.position = { x: 80 + i * 220, y: 200 };
+      s.node.position = { x: REL_X2, y: REL_TOP + i * REL_STEP };
       nodes.push(s.node);
       actSceneIds.push(s.node.id);
     });
@@ -520,6 +528,125 @@ export class ManuscriptManager {
     // cosmetic; no event
   }
 
+  // -- scene layout within an act -------------------------------------------
+
+  // Layout constants shared with the diagram's act container rendering. Scene
+  // positions are stored RELATIVE to the act's top-left origin.
+  private static readonly ACT_HEADER_H = 44;
+  private static readonly ACT_PAD = 16;
+  private static readonly SCENE_H = 66;
+  private static readonly SCENE_GAP = 12;
+  private static readonly ACT_DEFAULT_W = 260;
+
+  /** The stacked relative position for the i-th scene in an act. */
+  private stackedScenePosition(index: number): { x: number; y: number } {
+    return {
+      x: ManuscriptManager.ACT_PAD,
+      y:
+        ManuscriptManager.ACT_HEADER_H +
+        ManuscriptManager.ACT_PAD +
+        index * (ManuscriptManager.SCENE_H + ManuscriptManager.SCENE_GAP),
+    };
+  }
+
+  /**
+   * Scenes in an act, in chain order (by order edges), falling back to the
+   * act's sceneIds order for any not on the chain.
+   */
+  private orderedSceneIdsOfAct(act: Act): string[] {
+    return this.orderedSceneIdsOfActFrom(this.flow, act);
+  }
+
+  /**
+   * Detect and repair scene positions that were stored in ABSOLUTE canvas
+   * coordinates by older builds (they belong far outside the act box, which
+   * made scenes appear at the far right). We only touch positions that fall
+   * clearly outside a plausible act-relative range; hand-placed relative
+   * positions are left untouched. Runs once on load; no persist here (the
+   * caller persists), no event.
+   */
+  private normalizeScenePositions(doc: FlowDocument) {
+    const looksAbsolute = (p?: { x: number; y: number }) =>
+      !p ||
+      typeof p.x !== "number" ||
+      typeof p.y !== "number" ||
+      p.x < 0 ||
+      p.y < 0 ||
+      // Old absolute lane formulas produced x = 80 + n*200/220 (so 280, 480,
+      // …) and y up to 460. A hand-placed RELATIVE x is small (act padding to
+      // roughly the act width minus a node). Treat x beyond ~200 or very large
+      // y as a stale absolute value and re-stack it. False positives are only
+      // cosmetic and fixable with the act's "arrange" button.
+      p.x > 200 ||
+      p.y > 1600;
+
+    for (const act of doc.acts) {
+      const ordered = this.orderedSceneIdsOfActFrom(doc, act);
+      let idx = 0;
+      for (const sid of ordered) {
+        const node = doc.nodes.find((n) => n.id === sid);
+        if (!node) continue;
+        if (looksAbsolute(node.position)) {
+          node.position = this.stackedScenePosition(idx);
+        }
+        idx++;
+      }
+    }
+  }
+
+  /** Static-doc variant of orderedSceneIdsOfAct (used during migrate/normalize). */
+  private orderedSceneIdsOfActFrom(doc: FlowDocument, act: Act): string[] {
+    const members = new Set(act.sceneIds);
+    const nextOf = new Map<string, string>();
+    const hasIncoming = new Set<string>();
+    for (const e of doc.edges) {
+      if (e.kind !== "order") continue;
+      if (!members.has(e.source) || !members.has(e.target)) continue;
+      nextOf.set(e.source, e.target);
+      hasIncoming.add(e.target);
+    }
+    const roots = act.sceneIds.filter((id) => !hasIncoming.has(id));
+    const visited = new Set<string>();
+    const out: string[] = [];
+    const walk = (start: string) => {
+      let cur: string | undefined = start;
+      while (cur && members.has(cur) && !visited.has(cur)) {
+        visited.add(cur);
+        out.push(cur);
+        cur = nextOf.get(cur);
+      }
+    };
+    for (const r of roots) walk(r);
+    for (const id of act.sceneIds) if (!visited.has(id)) walk(id);
+    return out;
+  }
+
+  /**
+   * Auto-arrange all scenes in an act into a tidy vertical stack (in chain
+   * order) and size the act to fit. Triggered by the "snap to act" action.
+   */
+  async arrangeAct(actId: string) {
+    const act = this.getAct(actId);
+    if (!act) return;
+    const ordered = this.orderedSceneIdsOfAct(act);
+    ordered.forEach((sid, i) => {
+      const node = this.getNode(sid);
+      if (node) node.position = this.stackedScenePosition(i);
+    });
+    // Grow the act box to fit the stack (never shrink below the default).
+    const count = Math.max(ordered.length, 1);
+    const height =
+      ManuscriptManager.ACT_HEADER_H +
+      ManuscriptManager.ACT_PAD * 2 +
+      count * (ManuscriptManager.SCENE_H + ManuscriptManager.SCENE_GAP);
+    act.size = {
+      width: act.size?.width ?? ManuscriptManager.ACT_DEFAULT_W,
+      height: Math.max(act.size?.height ?? 0, height),
+    };
+    await this.persist();
+    this._onDidChange.fire();
+  }
+
   /**
    * Delete an act and ALL its scenes (files included). Returns the number of
    * scenes removed so the caller can report it. The caller is responsible for
@@ -668,7 +795,13 @@ export class ManuscriptManager {
       kind,
       file: rel,
       name,
-      position: this.suggestPosition(kind),
+      // Scenes store positions RELATIVE to their act container; characters and
+      // places use absolute canvas lanes. Seed a relative slot for scenes so a
+      // freshly created scene lands tidily inside the act instead of far away.
+      position:
+        kind === "scene" && targetAct
+          ? this.suggestScenePosition(targetAct)
+          : this.suggestPosition(kind),
     };
     this.flow.nodes.push(node);
 
@@ -763,6 +896,24 @@ export class ManuscriptManager {
     const sameKind = this.flow.nodes.filter((n) => n.kind === kind);
     const lane = kind === "scene" ? 0 : kind === "character" ? 220 : 360;
     return { x: 80 + sameKind.length * 200, y: 80 + lane };
+  }
+
+  /**
+   * A default position for a NEW scene, RELATIVE to its act container. Scenes
+   * are stacked vertically inside the act, so we offset each new one below the
+   * ones already present. Kept small so it always lands inside the box; the
+   * diagram lets the user drag it wherever afterwards.
+   */
+  private suggestScenePosition(act: Act): { x: number; y: number } {
+    const ACT_HEADER_H = 44;
+    const ACT_PAD = 16;
+    const SCENE_H = 66;
+    const SCENE_GAP = 12;
+    const index = act.sceneIds.length; // this scene will be appended
+    return {
+      x: ACT_PAD,
+      y: ACT_HEADER_H + ACT_PAD + index * (SCENE_H + SCENE_GAP),
+    };
   }
 
   private async uniqueStem(folder: string, base: string): Promise<string> {

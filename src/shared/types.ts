@@ -175,6 +175,7 @@ export type DiagramToHost =
   | { type: "setActCollapsed"; actId: string; collapsed: boolean }
   | { type: "moveActPosition"; actId: string; position: { x: number; y: number } }
   | { type: "resizeAct"; actId: string; size: { width: number; height: number } }
+  | { type: "arrangeAct"; actId: string }
   | { type: "moveSceneToAct"; sceneId: string; actId: string }
   | { type: "addSceneToAct"; actId: string };
 
