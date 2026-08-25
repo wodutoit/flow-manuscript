@@ -12,7 +12,9 @@
   "engines": {
     "vscode": "^1.90.0"
   },
-  "categories": ["Other"],
+  "categories": [
+    "Other"
+  ],
   "main": "./dist-extension/extension/extension.js",
   "activationEvents": [
     "onView:flowManuscript.tree",
@@ -82,6 +84,10 @@
         "command": "flowManuscript.moveSceneToAct",
         "title": "Move to Act…",
         "icon": "$(arrow-right)"
+      },
+      {
+        "command": "flowManuscript.debug.aiSpike",
+        "title": "Flow Manuscript: Debug AI Spike (temporary — Phase 0)"
       }
     ],
     "viewsContainers": {
@@ -194,7 +200,7 @@
     "build:editor": "vite build --config webview-editor/vite.config.ts",
     "build": "npm run copy-dict && npm run build:extension && npm run build:diagram && npm run build:editor",
     "watch:extension": "node scripts/build-extension.js --watch",
-    "package": "vsce package",
+    "package": "node scripts/generate-native-deps-ignore.js && node scripts/prune-unused-native-variants.js && vsce package && node scripts/verify-vsix-contents.js",
     "vscode:prepublish": "npm run build"
   },
   "devDependencies": {
@@ -215,6 +221,7 @@
     "dictionary-en": "^4.0.0",
     "dictionary-en-gb": "^3.0.0",
     "gray-matter": "^4.0.3",
+    "node-llama-cpp": "^3.20.0",
     "nspell": "^2.1.5",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",

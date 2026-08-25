@@ -391,6 +391,126 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     )
   );
+
+  // --- TEMPORARY: Phase 0.2 node-llama-cpp Electron-host spike --------------
+  // Delete this whole command block once Phase 0 is confirmed and Phase 1
+  // starts for real — this exists only to prove node-llama-cpp's native
+  // binary loads under Electron's bundled Node (the extension host), not
+  // just plain Node. Plain-Node API already confirmed via spike.mjs on
+  // 2026-08-25. Run via Command Palette: "Flow Manuscript: Debug AI Spike".
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "flowManuscript.debug.aiSpike",
+      async () => {
+        const out = vscode.window.createOutputChannel("Flow AI Spike");
+        out.show(true);
+        out.appendLine("--- Flow AI Spike (Electron extension host) ---");
+        try {
+          const modelPick = await vscode.window.showOpenDialog({
+            canSelectMany: false,
+            canSelectFolders: false,
+            canSelectFiles: true,
+            openLabel: "Select the .gguf model file",
+            filters: { "GGUF model": ["gguf"] },
+          });
+          if (!modelPick?.[0]) {
+            out.appendLine("Cancelled: no model file selected.");
+            return;
+          }
+          const modelPath = modelPick[0].fsPath;
+          out.appendLine(`Model: ${modelPath}`);
+
+          out.appendLine("Importing node-llama-cpp...");
+          const llamaCpp: any = await import("node-llama-cpp");
+          out.appendLine("Import OK. Calling getLlama()...");
+          const llama = await llamaCpp.getLlama();
+          out.appendLine(`getLlama() OK. gpu = ${llama.gpu ?? "(none)"}`);
+
+          out.appendLine("Loading model (may take a moment)...");
+          const model = await llama.loadModel({ modelPath });
+          out.appendLine(
+            `Model loaded. trainContextSize = ${
+              model.trainContextSize ?? "(unknown)"
+            }`
+          );
+
+          const plainContext = await model.createContext();
+          const plainSession = new llamaCpp.LlamaChatSession({
+            contextSequence: plainContext.getSequence(),
+          });
+          out.appendLine(
+            `Plain prompt: "Say the word 'ok' and nothing else."`
+          );
+          const plain = await plainSession.prompt(
+            "Say the word 'ok' and nothing else."
+          );
+          out.appendLine(`Plain answer: ${JSON.stringify(plain)}`);
+
+          out.appendLine("Building JSON-schema grammar...");
+          const schema = {
+            type: "object",
+            properties: {
+              suggestions: {
+                type: "array",
+                items: {
+                  type: "object",
+                  properties: {
+                    original: { type: "string" },
+                    suggestion: { type: "string" },
+                    reason: { type: "string" },
+                    category: {
+                      type: "string",
+                      enum: ["grammar", "clarity", "tone", "wordiness"],
+                    },
+                  },
+                  required: ["original", "suggestion", "reason", "category"],
+                },
+              },
+            },
+            required: ["suggestions"],
+          };
+          const grammar = await llama.createGrammarForJsonSchema(schema);
+          out.appendLine("Grammar built OK. Running constrained generation...");
+
+          const paragraph =
+            "Their going to the store yesterday, and its really really very extremely quiet outside.";
+          const prompt =
+            `You proofread fiction prose for grammar, clarity, tone, and wordiness issues ` +
+            `ONLY (never spelling). For the paragraph below, list up to 3 issues. ` +
+            `Each "original" must be an EXACT substring quoted from the paragraph.\n\n` +
+            `Paragraph:\n"""${paragraph}"""`;
+
+          const jsonContext = await model.createContext();
+          const jsonSession = new llamaCpp.LlamaChatSession({
+            contextSequence: jsonContext.getSequence(),
+          });
+          const raw = await jsonSession.prompt(prompt, { grammar });
+          out.appendLine(`Raw output: ${raw}`);
+          try {
+            const parsed = JSON.parse(raw);
+            out.appendLine("Parsed OK:");
+            out.appendLine(JSON.stringify(parsed, null, 2));
+            vscode.window.showInformationMessage(
+              "Flow AI Spike: success — see the 'Flow AI Spike' output panel."
+            );
+          } catch (e: any) {
+            out.appendLine(`JSON.parse FAILED: ${e?.message ?? String(e)}`);
+            vscode.window.showWarningMessage(
+              "Flow AI Spike: generation ran but JSON.parse failed — see output panel."
+            );
+          }
+        } catch (e: any) {
+          out.appendLine("!!! SPIKE FAILED !!!");
+          out.appendLine(String(e?.stack ?? e));
+          vscode.window.showErrorMessage(
+            `Flow AI Spike failed: ${
+              e?.message ?? String(e)
+            } — see 'Flow AI Spike' output panel for details.`
+          );
+        }
+      }
+    )
+  );
 }
 
 export function deactivate() {
