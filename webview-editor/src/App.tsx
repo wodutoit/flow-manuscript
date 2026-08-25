@@ -22,6 +22,7 @@ import {
   setAiDecorations,
   aiSuggestionAt,
   findCurrentParagraph,
+  getAiItems,
   type AiSuggestionDeco,
 } from "./aiSuggestPlugin";
 import type {
@@ -417,6 +418,18 @@ export default function App() {
       },
     },
     onUpdate: ({ editor }) => {
+      // Mirror the plugin's post-remap item list into React state. The
+      // plugin re-anchors surviving suggestions across every doc change
+      // (see remapItems in aiSuggestPlugin.ts); this keeps our array
+      // index-aligned with the rendered decorations, which matters because
+      // a click resolves through the decoration's data-ai-index.
+      setAiGrammarItems((prev) => {
+        const next = getAiItems(editor.state);
+        // Avoid a state update (and re-render) when nothing changed — this
+        // fires on every keystroke.
+        if (prev.length === 0 && next.length === 0) return prev;
+        return next;
+      });
       if (loadingRef.current || !doc) return;
       setSaved("saving");
       const md = (editor.storage as any).markdown.getMarkdown() as string;
@@ -483,10 +496,34 @@ export default function App() {
           try {
             current = editor.state.doc.textBetween(docFrom, docTo);
           } catch {
+            console.warn("[AI Grammar] dropped: doc position no longer exists", {
+              docFrom,
+              docTo,
+              original: s.original,
+            });
             continue; // position no longer exists in the doc at all
           }
-          if (current !== s.original) continue;
+          if (current !== s.original) {
+            // Logged rather than dropped silently: a mismatch here means
+            // either the user genuinely edited mid-review (the case this
+            // guard exists for) or the host's offsets disagree with the
+            // doc's — very different problems that used to look identical
+            // from the outside (nothing highlights, no explanation).
+            console.warn("[AI Grammar] dropped: span no longer matches", {
+              docFrom,
+              docTo,
+              expected: s.original,
+              found: current,
+            });
+            continue;
+          }
           items.push({ docFrom, docTo, suggestion: s });
+        }
+        if (msg.suggestions.length > 0 && items.length === 0) {
+          console.warn(
+            `[AI Grammar] all ${msg.suggestions.length} suggestion(s) from the host ` +
+              `were dropped by the staleness guard — nothing will highlight.`
+          );
         }
         setAiGrammarItems(items);
         setAiDecorations(editor.view, items);
@@ -567,6 +604,15 @@ export default function App() {
     if (!editor || !doc || aiBusy || aiStatus !== "ready") return;
     const para = findCurrentParagraph(editor.state);
     if (!para) return; // cursor isn't in a plain paragraph — silently no-op
+    // Start every run from a clean slate: clear the previous run's
+    // highlights and any open popover before requesting new ones. Otherwise
+    // stale decorations from the last check stay on screen during the new
+    // one and — if the new check returns nothing — linger afterwards,
+    // leaving the editor showing results that no longer correspond to
+    // anything the model just said.
+    setAiSuggest(null);
+    setAiGrammarItems([]);
+    setAiDecorations(editor.view, []);
     aiGrammarRequestFrom.current = para.from;
     setAiBusy(true);
     post({
@@ -614,30 +660,69 @@ export default function App() {
     const hit = aiSuggestionAt(editor.view, e.target);
     if (!hit) return;
     e.preventDefault();
+    // Prefer the span recorded in state when the decoration carries a usable
+    // index. Those positions were verified against the live document when
+    // the results arrived; the DOM-derived pair on `hit` is only a fallback
+    // for a decoration rendered before this index existed.
+    const tracked =
+      hit.index >= 0 && hit.index < aiGrammarItems.length
+        ? aiGrammarItems[hit.index]
+        : undefined;
     setAiSuggest({
       x: e.clientX,
       y: e.clientY,
-      from: hit.from,
-      to: hit.to,
-      suggestion: hit.suggestion,
+      from: tracked ? tracked.docFrom : hit.from,
+      to: tracked ? tracked.docTo : hit.to,
+      suggestion: tracked ? tracked.suggestion : hit.suggestion,
     });
   };
 
   const acceptAiSuggestion = () => {
     if (!editor || !aiSuggest) return;
+    const { from, to } = aiSuggest;
+    const replacement = aiSuggest.suggestion.suggestion;
+
+    // Verify the span still holds what we think it does before replacing it.
+    // Accept previously trusted a DOM-derived range and called
+    // insertContentAt() blind: when the range was off, it silently replaced
+    // nothing while still clearing every highlight, so the click looked like
+    // it had done something and hadn't (reported 2026-08-25).
+    let current = "";
+    try {
+      current = editor.state.doc.textBetween(from, to);
+    } catch {
+      current = "";
+    }
+    if (current !== aiSuggest.suggestion.original) {
+      console.warn("[AI Grammar] accept aborted: span no longer matches", {
+        from,
+        to,
+        expected: aiSuggest.suggestion.original,
+        found: current,
+      });
+      setAiSuggest(null);
+      return;
+    }
+
+    // insertText, not insertContentAt: the replacement is plain text, and
+    // insertContentAt runs it through the HTML/content parser, which can
+    // mangle or drop a string containing characters like < or &.
     editor
       .chain()
       .focus()
-      .insertContentAt(
-        { from: aiSuggest.from, to: aiSuggest.to },
-        aiSuggest.suggestion.suggestion
-      )
+      .command(({ tr }) => {
+        tr.insertText(replacement, from, to);
+        return true;
+      })
       .run();
-    // The edit above changes the doc, which the AI Grammar plugin treats as
-    // invalidating every decoration, not just this one (see
-    // aiSuggestPlugin.ts's docChanged handling) — keep this component's own
-    // bookkeeping in sync with that rather than trying to partially remap.
-    setAiGrammarItems([]);
+
+    // The remaining suggestions survive this edit: the plugin re-anchors
+    // them through the change and drops any whose text no longer matches
+    // (see remapItems in aiSuggestPlugin.ts). The accepted one removes
+    // itself that way too — its span now holds the replacement, not the
+    // original. Read the survivors back so this component's array stays
+    // index-aligned with the decorations still on screen.
+    setAiGrammarItems(getAiItems(editor.state));
     setAiSuggest(null);
   };
 

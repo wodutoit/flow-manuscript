@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
+import * as path from "path";
 import { Readable } from "stream";
 import { pipeline } from "stream/promises";
 import type {
@@ -8,17 +9,84 @@ import type {
   AiStatus,
 } from "../shared/types";
 
-// Qwen2.5-1.5B-Instruct, Q4_K_M GGUF — chosen concretely over e.g. Llama-3.2
-// because it's Apache-2.0 with no gated-repo click-through license, which
-// matters for an unattended first-run download (a Llama-3.2 GGUF sits behind
-// an authenticated HF token). Confirmed as the exact repo/filename the user's
-// own Phase 0 spike downloaded and ran successfully (2026-08-25). ~1.1 GB.
-const MODEL_FILENAME = "qwen2.5-1.5b-instruct-q4_k_m.gguf";
-const MODEL_URL =
-  "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf";
-// Fallback only for the progress bar's percentage math, if HF ever serves a
-// response without a Content-Length header — the real size always wins.
-const MODEL_APPROX_BYTES = 1_120_000_000;
+/**
+ * Known-compatible local GGUF chat models, selectable from
+ * `flowManuscript.ai.model` in Settings. All four were confirmed to exist at
+ * these exact repo+filename paths via web search (2026-08-25); sizes are the
+ * quantized file's approximate download size, used only as a fallback for
+ * the progress bar if a response ever lacks a Content-Length header.
+ *
+ * "qwen2.5-1.5b-instruct" is the original default (Apache-2.0, confirmed
+ * working end to end by the user's own Phase 0 spike). The others are
+ * offered as alternatives for users who want a different quality/size
+ * trade-off, or whose experience with the default hasn't been good enough —
+ * small local models vary noticeably in how reliably they follow
+ * instructions like "only flag a real issue."
+ */
+const MODEL_PRESETS: Record<
+  string,
+  { label: string; filename: string; url: string; approxBytes: number }
+> = {
+  "qwen2.5-1.5b-instruct": {
+    label: "Qwen2.5 1.5B Instruct — Apache-2.0, ~1.1 GB, smallest/fastest",
+    filename: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    approxBytes: 1_120_000_000,
+  },
+  "smollm2-1.7b-instruct": {
+    label: "SmolLM2 1.7B Instruct — Apache-2.0, ~1.1 GB, different vendor/training than the default",
+    filename: "smollm2-1.7b-instruct-q4_k_m.gguf",
+    url: "https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF/resolve/main/smollm2-1.7b-instruct-q4_k_m.gguf",
+    approxBytes: 1_060_000_000,
+  },
+  "qwen2.5-3b-instruct": {
+    label: "Qwen2.5 3B Instruct — Qwen Research License (non-commercial use only), ~2.1 GB, larger/more capable",
+    filename: "qwen2.5-3b-instruct-q4_k_m.gguf",
+    url: "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/main/qwen2.5-3b-instruct-q4_k_m.gguf",
+    approxBytes: 2_100_000_000,
+  },
+  "phi-3.5-mini-instruct": {
+    label: "Phi-3.5 Mini Instruct — default, MIT, ~2.4 GB, most capable of these four",
+    filename: "Phi-3.5-mini-instruct-Q4_K_M.gguf",
+    url: "https://huggingface.co/bartowski/Phi-3.5-mini-instruct-GGUF/resolve/main/Phi-3.5-mini-instruct-Q4_K_M.gguf",
+    approxBytes: 2_390_000_000,
+  },
+};
+// Was qwen2.5-1.5b-instruct through Phase 3. Changed 2026-08-25 after the
+// 1.5B model repeatedly declared a paragraph containing "He had not meant
+// are take it" free of errors — a capability ceiling no amount of prompt
+// work moved. Phi-3.5 Mini is ~2.4 GB rather than ~1.1 GB, so first run
+// downloads more, but proofreading is the whole point of the feature and
+// the smaller model could not do it reliably.
+const DEFAULT_MODEL_KEY = "phi-3.5-mini-instruct";
+
+/** Resolves `flowManuscript.ai.model` (+ the custom-model settings, if that's
+ * what's selected) to a concrete {filename, url, approxBytes} to download.
+ * `filename` is always sanitized to a bare basename before being joined onto
+ * `globalStorageUri` — it comes from a preset we control, or from a
+ * user-editable setting we don't fully trust as a path segment. */
+function resolveModelConfig(): {
+  filename: string;
+  url: string;
+  approxBytes: number;
+} {
+  const cfg = vscode.workspace.getConfiguration("flowManuscript");
+  const key = cfg.get<string>("ai.model", DEFAULT_MODEL_KEY);
+  if (key === "custom") {
+    const url = cfg.get<string>("ai.customModelUrl", "").trim();
+    const rawFilename = cfg.get<string>("ai.customModelFilename", "").trim();
+    if (!url || !rawFilename) {
+      throw new Error(
+        'flowManuscript.ai.model is set to "custom" but ' +
+          "flowManuscript.ai.customModelUrl and/or flowManuscript.ai.customModelFilename " +
+          "are empty. Set both in Settings, or choose a built-in model instead."
+      );
+    }
+    return { url, filename: path.basename(rawFilename), approxBytes: 1_500_000_000 };
+  }
+  const preset = MODEL_PRESETS[key] ?? MODEL_PRESETS[DEFAULT_MODEL_KEY];
+  return preset;
+}
 
 const SUGGESTION_CATEGORIES = [
   "grammar",
@@ -53,9 +121,22 @@ function isNoteSentiment(v: unknown): v is AiEditorNote["sentiment"] {
 
 // JSON-schema-constrained decoding via `llama.createGrammarForJsonSchema` —
 // confirmed working in the Phase 0.1/0.2 spikes, no hand-written GBNF needed.
+// `analysis` is deliberately the FIRST property, and it is not shown to the
+// user — it exists purely as a scratchpad. Under grammar-constrained
+// decoding the model has no room to reason: it starts emitting the JSON
+// immediately, and for a 1.5B model the cheapest first token in
+// `"suggestions": [` is the one that closes it again. Observed exactly that
+// (2026-08-25): a clean, correctly-scoped prompt returned `{"suggestions":
+// []}` on a paragraph with several obvious errors. Because node-llama-cpp's
+// JSON-schema grammar emits keys in schema order, putting a free-text field
+// first forces the model to write out its per-sentence pass BEFORE it can
+// reach the array — plain chain-of-thought, just inside the constrained
+// output. It's also logged, so its reasoning is visible when results look
+// wrong.
 const GRAMMAR_SCHEMA = {
   type: "object",
   properties: {
+    analysis: { type: "string" },
     suggestions: {
       type: "array",
       items: {
@@ -70,7 +151,7 @@ const GRAMMAR_SCHEMA = {
       },
     },
   },
-  required: ["suggestions"],
+  required: ["analysis", "suggestions"],
 };
 
 const EDITOR_SCHEMA = {
@@ -93,47 +174,278 @@ const EDITOR_SCHEMA = {
   required: ["notes"],
 };
 
-function buildGrammarPrompt(text: string, voiceprint?: string): string {
+/** The built-in AI Grammar instructions, also shown to the user (as the
+ * default value's *description*, not the value itself — see package.json)
+ * so they have a working example to start editing from. Deliberately does
+ * NOT include the trailing voiceprint/paragraph block — `composePrompt()`
+ * appends that uniformly for both the default and any custom override. */
+const DEFAULT_GRAMMAR_INSTRUCTIONS =
+  `You are a careful proofreader for fiction prose. Work in two steps.\n\n` +
+  `STEP 1 — write the "analysis" field first. Go through the text under review one sentence ` +
+  `at a time. For each sentence, quote it and then say either "OK" or exactly what is wrong ` +
+  `with it. Check every sentence before you stop.\n\n` +
+  `STEP 2 — write the "suggestions" array, one entry for each problem you identified in ` +
+  `step 1 (at most 5).\n\n` +
+  `The problems to look for, most important first:\n` +
+  `1. A WRONG WORD — a correctly-spelled word sitting where a different word belongs. These ` +
+  `are the easiest to miss precisely because every word is spelled correctly, so read for ` +
+  `sense, not for spelling. Examples: "She new the answer" (should be "knew"); "They would ` +
+  `of come" (should be "have"); "he went form there" (should be "from").\n` +
+  `2. A MISSING or DUPLICATED word. Examples: "He walked to the the door" (duplicated "the"); ` +
+  `"She had nothing say" (missing "to").\n` +
+  `3. Subject-verb agreement or verb tense mistakes.\n` +
+  `4. Phrasing that is unclear or wordier than it needs to be.\n\n` +
+  `Ignore misspelled non-words — a spellchecker already handles those.\n\n` +
+  `For each entry in "suggestions":\n` +
+  `- "original": copy the exact words from the text under review, character for character. ` +
+  `Copy the SHORTEST span that contains the problem — usually two to six words, not the whole ` +
+  `sentence. Copy only from the text under review, never from these instructions or from a ` +
+  `style guide section.\n` +
+  `- "suggestion": those same words, corrected. It must differ from "original".\n` +
+  `- "reason": a short explanation of the problem.\n` +
+  `- "category": one of grammar, clarity, tone, wordiness.\n\n` +
+  `If step 1 genuinely found nothing wrong in any sentence, return an empty "suggestions" array.`;
+
+/** The built-in AI Editor instructions — same role as
+ * `DEFAULT_GRAMMAR_INSTRUCTIONS` above. */
+const DEFAULT_EDITOR_INSTRUCTIONS =
+  `You are a developmental fiction editor. For the paragraph below, give up to 4 short notes ` +
+  `on craft — pacing, showing vs. telling, sensory detail, tension, POV consistency — never ` +
+  `grammar or spelling. If there's nothing worth noting, return an empty list. Each note should ` +
+  `be one or two sentences, specific to this paragraph, not generic writing advice. Tag every ` +
+  `note's "sentiment" as "strength" if it calls out something that's genuinely working well, or ` +
+  `"improvement" if it's something the author should consider changing — never use "strength" ` +
+  `just to soften an improvement note; most notes on a working paragraph should be "improvement" ` +
+  `unless something truly stands out as praiseworthy.`;
+
+/**
+ * Shared prompt assembly for both AI Grammar and AI Editor. `instructions`
+ * is either the built-in default above or the user's
+ * `flowManuscript.ai.grammarPrompt`/`ai.editorPrompt` override (trimmed,
+ * empty-string-means-"use the default" — see `getCustomPrompt`).
+ *
+ * The output JSON *shape* is enforced separately by grammar-constrained
+ * decoding (`GRAMMAR_SCHEMA`/`EDITOR_SCHEMA`) regardless of what this prompt
+ * says — a custom override can change what the model is told to look for
+ * and how, but can't break the field structure the host parses.
+ *
+ * Two ways to use a custom override:
+ * - Plain instructions, no placeholders: the voiceprint block (if any) and
+ *   the paragraph are appended automatically, same layout as the default.
+ * - Instructions containing a literal `{{paragraph}}` (and optionally
+ *   `{{voiceprint}}`): full control over the final prompt layout — both are
+ *   substituted in place and nothing is appended.
+ */
+function composePrompt(
+  instructions: string,
+  text: string,
+  voiceprint: string | undefined
+): string {
+  // The voiceprint block is fenced off aggressively. A real failure this
+  // caused (2026-08-25): a voiceprint written as imperative style rules
+  // ("Never use the dash. At all.") read to a 1.5B model as more text to
+  // critique, and AI Grammar came back quoting the *style guide* instead of
+  // the prose — 5 suggestions, none of them from the paragraph, all silently
+  // dropped. Hence the explicit REFERENCE ONLY framing, the "never quote
+  // from this" instruction, and putting the text under review last behind
+  // an unmistakable header so it's the most recent thing in context.
   const voiceprintBlock = voiceprint
-    ? `The author's style guide follows — weigh suggestions against it:\n"""${voiceprint}"""\n\n`
+    ? `--- BEGIN STYLE GUIDE (REFERENCE ONLY) ---\n` +
+      `The following is the author's style guide. It describes how they want to write. ` +
+      `It is NOT the text under review: never quote from it, never critique it, never treat ` +
+      `its rules as sentences needing correction. Use it only to judge whether something in ` +
+      `the text under review fits the author's stated preferences.\n` +
+      `${voiceprint}\n` +
+      `--- END STYLE GUIDE ---\n\n`
     : "";
+  if (instructions.includes("{{paragraph}}")) {
+    return instructions
+      .replace(/\{\{voiceprint\}\}/g, voiceprintBlock)
+      .replace(/\{\{paragraph\}\}/g, text);
+  }
   return (
-    `You are a careful proofreader for fiction prose. Read the paragraph below one sentence at ` +
-    `a time and check each sentence against this list:\n` +
-    `- Subject-verb agreement and verb tense mistakes.\n` +
-    `- A WRONG-WORD error: a real, correctly-spelled word used where a different word belongs ` +
-    `— e.g. "meat" instead of "meant", "their" instead of "there", "form" instead of "from". ` +
-    `This is a grammar issue, not spelling, even though the word by itself is spelled correctly ` +
-    `— do not skip these.\n` +
-    `- Missing or duplicated words, and dangling/incomplete clauses.\n` +
-    `- Unclear or unnecessarily wordy phrasing.\n` +
-    `- Tone that clashes with the surrounding prose.\n` +
-    `Never flag a misspelled/non-word typo — a separate spellchecker already covers those.\n\n` +
-    `List up to 5 real issues you find, one entry per issue. ONLY include an entry where ` +
-    `"suggestion" is actually different from "original" — never include an entry to say a ` +
-    `sentence is already correct. Return an empty list only if you have checked every sentence ` +
-    `against the list above and genuinely found nothing — do not default to an empty list just ` +
-    `because you're unsure; a plausible guess at a real issue is more useful than silence. Each ` +
-    `"original" must be an EXACT substring quoted verbatim from the paragraph (never a ` +
-    `paraphrase) so it can be located and replaced automatically.\n\n` +
-    `${voiceprintBlock}Paragraph:\n"""${text}"""`
+    `${instructions}\n\n${voiceprintBlock}` +
+    `--- BEGIN TEXT UNDER REVIEW ---\n${text}\n--- END TEXT UNDER REVIEW ---\n\n` +
+    `Review only the text between BEGIN/END TEXT UNDER REVIEW above.`
   );
 }
 
-function buildEditorPrompt(text: string, voiceprint?: string): string {
-  const voiceprintBlock = voiceprint
-    ? `The author's style guide follows — weigh your notes against it:\n"""${voiceprint}"""\n\n`
-    : "";
-  return (
-    `You are a developmental fiction editor. For the paragraph below, give up to 4 short notes ` +
-    `on craft — pacing, showing vs. telling, sensory detail, tension, POV consistency — never ` +
-    `grammar or spelling. If there's nothing worth noting, return an empty list. Each note should ` +
-    `be one or two sentences, specific to this paragraph, not generic writing advice. Tag every ` +
-    `note's "sentiment" as "strength" if it calls out something that's genuinely working well, or ` +
-    `"improvement" if it's something the author should consider changing — never use "strength" ` +
-    `just to soften an improvement note; most notes on a working paragraph should be "improvement" ` +
-    `unless something truly stands out as praiseworthy.\n\n` +
-    `${voiceprintBlock}Paragraph:\n"""${text}"""`
+/**
+ * Locates the model's quoted `original` inside the real paragraph text.
+ *
+ * An exact `indexOf` is the happy path, but small models routinely quote
+ * *almost* verbatim — a trailing period dropped, a straight quote where the
+ * editor holds a curly one, doubled spaces collapsed, different case on the
+ * first word. Every one of those made the old exact-only lookup return -1,
+ * which silently dropped an otherwise-good suggestion. So this falls back
+ * through progressively more forgiving matches, and critically always
+ * returns a span expressed in the ORIGINAL paragraph's coordinates (the
+ * host's contract with the webview), never the normalized string's.
+ *
+ * Returns `null` if even the loosest match fails — the caller drops the
+ * suggestion rather than shipping a bogus position.
+ */
+function locateOriginal(
+  paragraphText: string,
+  original: string
+): { start: number; end: number; matchedText: string } | null {
+  const exact = paragraphText.indexOf(original);
+  if (exact !== -1) {
+    return { start: exact, end: exact + original.length, matchedText: original };
+  }
+
+  // Trimmed — the model wrapped the quote in stray whitespace.
+  const trimmed = original.trim();
+  if (trimmed && trimmed !== original) {
+    const at = paragraphText.indexOf(trimmed);
+    if (at !== -1) {
+      return { start: at, end: at + trimmed.length, matchedText: trimmed };
+    }
+  }
+
+  // Case-insensitive — the model re-capitalized the first word.
+  const lowerAt = paragraphText.toLowerCase().indexOf(trimmed.toLowerCase());
+  if (trimmed && lowerAt !== -1) {
+    return {
+      start: lowerAt,
+      end: lowerAt + trimmed.length,
+      matchedText: paragraphText.slice(lowerAt, lowerAt + trimmed.length),
+    };
+  }
+
+  // Whitespace/punctuation-tolerant: build a regex from the quote where any
+  // run of whitespace matches any run of whitespace, curly and straight
+  // quotes/apostrophes are interchangeable, and a trailing sentence-ending
+  // punctuation mark is optional. Escaping everything else keeps this a
+  // literal match, not a user-controlled pattern.
+  if (!trimmed) return null;
+  const withoutTrailingPunct = trimmed.replace(/[.,;:!?]+$/, "");
+  if (!withoutTrailingPunct) return null;
+  const pattern = withoutTrailingPunct
+    .split(/\s+/)
+    .map((word) =>
+      word
+        .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+        .replace(/['‘’]/g, "['‘’]")
+        .replace(/["“”]/g, '["“”]')
+    )
+    .join("\\s+");
+  try {
+    const re = new RegExp(pattern + "[.,;:!?]?", "i");
+    const m = re.exec(paragraphText);
+    if (m && m.index !== -1) {
+      return {
+        start: m.index,
+        end: m.index + m[0].length,
+        matchedText: m[0],
+      };
+    }
+  } catch {
+    /* malformed pattern — fall through to null */
+  }
+  return null;
+}
+
+/** Hard ceiling on how many separate model calls one AI Grammar run makes.
+ * Each sentence is its own inference, so an unusually long paragraph could
+ * otherwise spin for minutes. Anything past this is skipped and reported in
+ * the output log — never silently dropped. */
+const MAX_SENTENCES_PER_RUN = 25;
+
+/**
+ * Splits a paragraph into sentences, each with its exact start offset in the
+ * original paragraph — those offsets are what let a suggestion found inside
+ * one sentence be mapped back onto paragraph coordinates for the webview.
+ *
+ * Intentionally simple: split on sentence-ending punctuation, keeping any
+ * trailing quote/bracket with the sentence it closes. It will over-split on
+ * abbreviations ("Mr. Carl" becomes two fragments), which is acceptable here
+ * — a fragment just becomes one more cheap check, and no offset is harmed.
+ * Fragments with no letters (stray "...") are skipped as nothing to review.
+ */
+function splitSentences(text: string): { text: string; start: number }[] {
+  const out: { text: string; start: number }[] = [];
+  const re = /[^.!?]*[.!?]+["'”’)\]]*\s*|[^.!?]+$/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    // Zero-length match would spin forever; nudge past it.
+    if (m[0].length === 0) {
+      re.lastIndex++;
+      continue;
+    }
+    const raw = m[0];
+    const leading = raw.length - raw.trimStart().length;
+    const trimmed = raw.trim();
+    if (trimmed.length >= 3 && /[A-Za-z]/.test(trimmed)) {
+      out.push({ text: trimmed, start: m.index + leading });
+    }
+  }
+  return out;
+}
+
+/** Single-sentence variant of the grammar instructions. A small model does
+ * far better told "here is one sentence, what is wrong with it" than asked
+ * to sweep a whole paragraph — the paragraph-wide version reliably skimmed
+ * and reported nothing. Same two-step analysis-then-suggestions shape, same
+ * worked examples, just scoped down. */
+const DEFAULT_SENTENCE_GRAMMAR_INSTRUCTIONS =
+  `You are a careful proofreader for fiction prose. You will be shown ONE sentence.\n\n` +
+  `STEP 1 — write the "analysis" field. Read the sentence word by word and say, for each ` +
+  `part of it, whether it makes sense. Pay special attention to whether every word is the ` +
+  `word the author actually meant.\n\n` +
+  `STEP 2 — write the "suggestions" array: one entry per problem (at most 3), or an empty ` +
+  `array if the sentence is genuinely correct.\n\n` +
+  `The problems to look for, most important first:\n` +
+  `1. A WRONG WORD — a correctly-spelled word sitting where a different word belongs. Read ` +
+  `for sense, not for spelling. Examples: "She new the answer" (should be "knew"); "They ` +
+  `would of come" (should be "have"); "he went form there" (should be "from"); "I have not ` +
+  `meant are do that" (should be "meant to do that").\n` +
+  `2. A MISSING or DUPLICATED word. Examples: "He walked to the the door" (duplicated "the"); ` +
+  `"She had nothing say" (missing "to").\n` +
+  `3. Subject-verb agreement or verb tense mistakes.\n` +
+  `4. Phrasing that is unclear or wordier than it needs to be.\n\n` +
+  `Ignore misspelled non-words — a spellchecker already handles those.\n\n` +
+  `For each entry in "suggestions":\n` +
+  `- "original": copy the exact words from the sentence, character for character. Copy the ` +
+  `SHORTEST span containing the problem — usually two to six words, never the whole sentence ` +
+  `unless the whole sentence is the problem.\n` +
+  `- "suggestion": those same words, corrected. It must differ from "original".\n` +
+  `- "reason": a short explanation.\n` +
+  `- "category": one of grammar, clarity, tone, wordiness.`;
+
+function buildSentenceGrammarPrompt(
+  sentence: string,
+  voiceprint?: string,
+  customInstructions?: string
+): string {
+  return composePrompt(
+    customInstructions || DEFAULT_SENTENCE_GRAMMAR_INSTRUCTIONS,
+    sentence,
+    voiceprint
+  );
+}
+
+function buildGrammarPrompt(
+  text: string,
+  voiceprint?: string,
+  customInstructions?: string
+): string {
+  return composePrompt(
+    customInstructions || DEFAULT_GRAMMAR_INSTRUCTIONS,
+    text,
+    voiceprint
+  );
+}
+
+function buildEditorPrompt(
+  text: string,
+  voiceprint?: string,
+  customInstructions?: string
+): string {
+  return composePrompt(
+    customInstructions || DEFAULT_EDITOR_INSTRUCTIONS,
+    text,
+    voiceprint
   );
 }
 
@@ -188,7 +500,35 @@ export class AiAssist implements vscode.Disposable {
   // conversation.
   private readonly grammarCache = new Map<"grammar" | "editor", any>();
 
-  constructor(private readonly context: vscode.ExtensionContext) {}
+  /** Everything users can see about what the model is actually doing —
+   * which model loaded, download/load failures with the real error (not
+   * just a swallowed "no issues found"), and on every AI Grammar/AI Editor
+   * parse failure, the model's raw output. Surfaced via the
+   * `flowManuscript.showAiOutput` command (see extension.ts) since
+   * console.error alone only shows up in the Extension Host's Debug
+   * Console, which most users never open — a silent parse failure and a
+   * genuine "nothing to flag" result would otherwise look identical in the
+   * UI (both just show an empty suggestion list). */
+  private readonly output = vscode.window.createOutputChannel(
+    "Flow Manuscript AI"
+  );
+
+  private readonly disposables: vscode.Disposable[] = [];
+
+  constructor(private readonly context: vscode.ExtensionContext) {
+    this.disposables.push(
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (
+          e.affectsConfiguration("flowManuscript.ai.enabled") ||
+          e.affectsConfiguration("flowManuscript.ai.model") ||
+          e.affectsConfiguration("flowManuscript.ai.customModelUrl") ||
+          e.affectsConfiguration("flowManuscript.ai.customModelFilename")
+        ) {
+          this.handleConfigChange();
+        }
+      })
+    );
+  }
 
   private setStatus(status: AiStatus) {
     if (this._status === status) return;
@@ -200,6 +540,45 @@ export class AiAssist implements vscode.Disposable {
     return vscode.workspace
       .getConfiguration("flowManuscript")
       .get<boolean>("ai.enabled", false);
+  }
+
+  showOutput() {
+    this.output.show(true);
+  }
+
+  /**
+   * A model or enabled-state setting changed. Tear down whatever's loaded
+   * (a loaded `model`/`llama` handle and cached grammars are specific to
+   * the model that was active when they were created) and immediately try
+   * `ensureReady()` again — this is what makes a live Settings change take
+   * effect right away instead of requiring the tree view to be closed and
+   * reopened. If AI is now disabled, `ensureReady()` no-ops and the model
+   * simply stays unloaded (freeing its memory), which is a bonus fix over
+   * the previous behavior where turning the setting off never actually
+   * unloaded an already-loaded model.
+   */
+  private async handleConfigChange() {
+    this.teardownModel();
+    this.grammarCache.clear();
+    this.loadingPromise = undefined;
+    this.setStatus("disabled");
+    await this.ensureReady();
+  }
+
+  private teardownModel() {
+    try {
+      this.model?.dispose?.();
+    } catch {
+      /* ignore — best-effort, see dispose()'s comment */
+    }
+    try {
+      this.llama?.dispose?.();
+    } catch {
+      /* ignore */
+    }
+    this.model = undefined;
+    this.llama = undefined;
+    this.llamaCppModule = undefined;
   }
 
   /**
@@ -229,27 +608,38 @@ export class AiAssist implements vscode.Disposable {
         return;
       }
       this.setStatus("loading");
+      this.output.appendLine(`Loading model: ${modelPath}`);
       this.llamaCppModule = await import("node-llama-cpp");
       this.llama = await this.llamaCppModule.getLlama();
       this.model = await this.llama.loadModel({ modelPath });
+      this.output.appendLine("Model loaded, status: ready");
       this.setStatus("ready");
     } catch (err) {
       console.error("flow-manuscript: AI model load failed", err);
+      this.output.appendLine(
+        `Model load failed: ${err instanceof Error ? err.stack ?? err.message : String(err)}`
+      );
       this.setStatus("error");
     }
   }
 
   /**
-   * Downloads the GGUF into `context.globalStorageUri` if it isn't already
-   * there, returning the final local path — or `undefined` if the user
-   * cancelled. Written to a `*.download` temp filename and renamed to the
-   * final name only on confirmed completion, so an interrupted download
-   * never leaves a truncated file that a later run mistakes for valid.
+   * Downloads the active model's GGUF (per `resolveModelConfig()`, which
+   * reads `flowManuscript.ai.model` and the custom-model settings) into
+   * `context.globalStorageUri` if it isn't already there, returning the
+   * final local path — or `undefined` if the user cancelled. Written to a
+   * `*.download` temp filename and renamed to the final name only on
+   * confirmed completion, so an interrupted download never leaves a
+   * truncated file that a later run mistakes for valid. Switching models
+   * leaves any previously-downloaded GGUF on disk rather than deleting it —
+   * switching back doesn't re-download, at the cost of using more disk over
+   * time if you try several models.
    */
   private async ensureModelDownloaded(): Promise<string | undefined> {
+    const { filename, url, approxBytes } = resolveModelConfig();
     const dir = this.context.globalStorageUri;
     await vscode.workspace.fs.createDirectory(dir);
-    const finalPath = vscode.Uri.joinPath(dir, MODEL_FILENAME).fsPath;
+    const finalPath = vscode.Uri.joinPath(dir, filename).fsPath;
     if (fs.existsSync(finalPath)) return finalPath;
 
     const tmpPath = finalPath + ".download";
@@ -259,7 +649,7 @@ export class AiAssist implements vscode.Disposable {
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
-          title: "Flow Manuscript: downloading AI model (~1 GB, one-time)",
+          title: `Flow Manuscript: downloading AI model "${filename}" (one-time)`,
           cancellable: true,
         },
         async (progress, token) => {
@@ -268,12 +658,12 @@ export class AiAssist implements vscode.Disposable {
             controller.abort()
           );
           try {
-            const res = await fetch(MODEL_URL, { signal: controller.signal });
+            const res = await fetch(url, { signal: controller.signal });
             if (!res.ok || !res.body) {
               throw new Error(`Model download failed: HTTP ${res.status}`);
             }
             const total =
-              Number(res.headers.get("content-length")) || MODEL_APPROX_BYTES;
+              Number(res.headers.get("content-length")) || approxBytes;
             let downloaded = 0;
             let lastPct = 0;
             const nodeStream = Readable.fromWeb(res.body as any);
@@ -338,6 +728,58 @@ export class AiAssist implements vscode.Disposable {
     return grammar;
   }
 
+  /** Reads `flowManuscript.ai.grammarPrompt`/`ai.editorPrompt` — an empty or
+   * whitespace-only value (the default) means "use the built-in prompt";
+   * `buildGrammarPrompt`/`buildEditorPrompt` treat `undefined` the same way
+   * via `||`. */
+  private getCustomPrompt(kind: "grammar" | "editor"): string | undefined {
+    const key = kind === "grammar" ? "ai.grammarPrompt" : "ai.editorPrompt";
+    const value = vscode.workspace
+      .getConfiguration("flowManuscript")
+      .get<string>(key, "")
+      .trim();
+    return value || undefined;
+  }
+
+  /**
+   * Whether to include the voiceprint in AI Grammar's prompt. Defaults to
+   * FALSE, unlike AI Editor which always gets it.
+   *
+   * Rationale (from a real failure, 2026-08-25): a voiceprint is typically
+   * written as imperative craft rules ("Never use the dash. At all."). A
+   * 1.5B model given that alongside a paragraph reviewed the *style guide*
+   * and returned five suggestions quoting it, none from the prose — AI
+   * Grammar produced nothing usable at all. Grammar checking is mechanical
+   * (agreement, wrong words, missing words); it barely benefits from voice
+   * guidance, while AI Editor's craft notes genuinely do. So the default
+   * trades a marginal benefit for a feature that actually works, and the
+   * setting is there for anyone on a larger model that can keep the two
+   * blocks straight.
+   */
+  private useVoiceprintForGrammar(): boolean {
+    return vscode.workspace
+      .getConfiguration("flowManuscript")
+      .get<boolean>("ai.useVoiceprintForGrammar", false);
+  }
+
+  /**
+   * Whether AI Grammar reviews one sentence per model call (the default)
+   * rather than the whole paragraph in a single call.
+   *
+   * Per-sentence is the default because whole-paragraph review failed in
+   * practice (2026-08-25): asked to sweep a ~160-word paragraph, the model
+   * skimmed, wrote generic boilerplate into its analysis field, and declared
+   * a paragraph containing "He had not meant are take it" free of errors.
+   * Narrowing each call to a single sentence makes it a far easier task. The
+   * cost is one inference per sentence, so a review takes proportionally
+   * longer — turn this off to trade accuracy back for speed.
+   */
+  private grammarPerSentence(): boolean {
+    return vscode.workspace
+      .getConfiguration("flowManuscript")
+      .get<boolean>("ai.grammarPerSentence", true);
+  }
+
   /**
    * Review the current paragraph for grammar/clarity/tone/wordiness issues.
    * `voiceprint`, if given, is prepended as style context (see
@@ -359,54 +801,221 @@ export class AiAssist implements vscode.Disposable {
     await this.ensureReady();
     return this.runQueued(async () => {
       if (this._status !== "ready" || !this.model || !this.llama) return [];
-      try {
-        const grammar = await this.getGrammar("grammar");
-        const context = await this.model.createContext();
-        const session = new this.llamaCppModule.LlamaChatSession({
-          contextSequence: context.getSequence(),
-        });
-        const raw = await session.prompt(
-          buildGrammarPrompt(paragraphText, voiceprint),
-          // Generous budget so the JSON object doesn't truncate mid-way.
-          { grammar, maxTokens: 1024 }
+      // See useVoiceprintForGrammar()'s doc comment — off by default because
+      // an imperative style guide reliably derails a small model's
+      // proofreading. `effectiveVoiceprint` (not the raw argument) is what
+      // the prompt works from; the raw one is still used to detect the
+      // "model quoted the style guide" failure when it IS enabled.
+      const effectiveVoiceprint = this.useVoiceprintForGrammar()
+        ? voiceprint
+        : undefined;
+      const perSentence = this.grammarPerSentence();
+
+      // Each unit is reviewed by its own model call. In per-sentence mode
+      // that's one call per sentence, with `start` recording where the
+      // sentence begins inside the paragraph so offsets can be mapped back;
+      // in whole-paragraph mode it's a single unit at offset 0.
+      let units = perSentence
+        ? splitSentences(paragraphText)
+        : [{ text: paragraphText, start: 0 }];
+      if (units.length > MAX_SENTENCES_PER_RUN) {
+        this.output.appendLine(
+          `[AI Grammar] paragraph has ${units.length} sentences; reviewing only ` +
+            `the first ${MAX_SENTENCES_PER_RUN} (flowManuscript.ai.grammarPerSentence ` +
+            `runs one model call per sentence). The rest were NOT checked.`
         );
-        const parsed = JSON.parse(raw);
-        const rawSuggestions: any[] = Array.isArray(parsed?.suggestions)
-          ? parsed.suggestions
-          : [];
-        const resolved: AiResolvedSuggestion[] = [];
+        units = units.slice(0, MAX_SENTENCES_PER_RUN);
+      }
+
+      this.output.appendLine(
+        `[AI Grammar] reviewing ${units.length} ${
+          perSentence ? "sentence(s), one model call each" : "paragraph (single call)"
+        }. voiceprint: ${
+          voiceprint === undefined
+            ? "none found"
+            : effectiveVoiceprint
+            ? `included (${voiceprint.length} chars)`
+            : "found but EXCLUDED from this prompt " +
+              "(flowManuscript.ai.useVoiceprintForGrammar is off)"
+        }.`
+      );
+
+      const resolved: AiResolvedSuggestion[] = [];
+      // Guards against the same span being decorated twice — possible when
+      // an over-split fragment overlaps its neighbour, or when the model
+      // reports one problem under two categories.
+      const claimedSpans = new Set<string>();
+      let totalRaw = 0;
+
+      for (let i = 0; i < units.length; i++) {
+        const unit = units[i];
+        const label = perSentence
+          ? `[sentence ${i + 1}/${units.length}]`
+          : `[paragraph]`;
+        const rawSuggestions = await this.runGrammarPass(
+          unit.text,
+          effectiveVoiceprint,
+          perSentence,
+          label
+        );
+        totalRaw += rawSuggestions.length;
+
         for (const s of rawSuggestions) {
-          if (!s || typeof s.original !== "string" || !s.original) continue;
+          if (!s || typeof s.original !== "string" || !s.original) {
+            this.output.appendLine(
+              `  ${label} dropped (no usable "original" field): ${JSON.stringify(s)}`
+            );
+            continue;
+          }
           const suggestionText =
             typeof s.suggestion === "string" ? s.suggestion : "";
+          // Locate BEFORE the no-op check. Order matters for diagnosis: when
+          // the model reviewed the wrong text entirely (quoting the style
+          // guide instead of the prose — a real failure seen 2026-08-25), it
+          // also emits suggestion == original, so a no-op-first ordering
+          // reported those as "no-op" and hid the actual cause.
+          //
+          // The search is scoped to THIS unit's text, then the resulting
+          // offsets are shifted by `unit.start` so they address the whole
+          // paragraph — which is the coordinate space the webview expects.
+          const located = locateOriginal(unit.text, s.original);
+          if (!located) {
+            const fromVoiceprint =
+              voiceprint !== undefined &&
+              locateOriginal(voiceprint, s.original) !== null;
+            this.output.appendLine(
+              fromVoiceprint
+                ? `  ${label} dropped (model quoted the STYLE GUIDE, not the text ` +
+                    `under review): ${JSON.stringify(s.original)}`
+                : `  ${label} dropped (quote not found in the text it was given — ` +
+                    `model paraphrased instead of quoting): ${JSON.stringify(s.original)}`
+            );
+            continue;
+          }
           // Backstop for the "this sentence is fine" no-op the prompt asks
-          // the model not to produce: if the model didn't actually propose
-          // a change, there's nothing for the user to act on — drop it
-          // rather than showing a decoration/popover with no real edit.
-          if (suggestionText.trim() === s.original.trim()) continue;
-          const start = paragraphText.indexOf(s.original);
-          if (start === -1) continue;
+          // the model not to produce: if the model didn't actually propose a
+          // change there's nothing to act on, so don't render a decoration.
+          if (suggestionText.trim() === s.original.trim()) {
+            this.output.appendLine(
+              `  ${label} dropped (no-op: suggestion identical to original): ` +
+                `${JSON.stringify(s.original)}`
+            );
+            continue;
+          }
+          const start = unit.start + located.start;
+          const end = unit.start + located.end;
+          const spanKey = `${start}:${end}`;
+          if (claimedSpans.has(spanKey)) {
+            this.output.appendLine(
+              `  ${label} dropped (duplicate of a span already suggested): ` +
+                `${JSON.stringify(located.matchedText)}`
+            );
+            continue;
+          }
+          claimedSpans.add(spanKey);
+          if (located.matchedText !== s.original) {
+            this.output.appendLine(
+              `  ${label} fuzzy-matched ${JSON.stringify(s.original)} -> ` +
+                `${JSON.stringify(located.matchedText)}`
+            );
+          }
+          this.output.appendLine(
+            `  ${label} KEPT ${JSON.stringify(located.matchedText)} -> ` +
+              `${JSON.stringify(suggestionText)}`
+          );
           resolved.push({
-            original: s.original,
+            // Ship the text as it actually appears in the paragraph, not as
+            // the model quoted it — the webview re-verifies the span against
+            // the live document and would drop a mismatch.
+            original: located.matchedText,
             suggestion: suggestionText,
             reason: typeof s.reason === "string" ? s.reason : "",
-            category: isSuggestionCategory(s.category)
-              ? s.category
-              : "clarity",
+            category: isSuggestionCategory(s.category) ? s.category : "clarity",
             start,
-            end: start + s.original.length,
+            end,
           });
         }
-        return resolved;
-      } catch (err) {
-        // A bad/truncated JSON parse (or any other generation-time hiccup)
-        // on one review degrades to an empty result, not an "error" status
-        // — that status is reserved for model load/download failure, so one
-        // bad generation doesn't disable every open panel's buttons.
-        console.error("flow-manuscript: AI Grammar check failed", err);
-        return [];
       }
+
+      this.output.appendLine(
+        `[AI Grammar] ${resolved.length} of ${totalRaw} raw suggestion(s) survived ` +
+          `filtering and were sent to the editor.` +
+          (resolved.length === 0 && totalRaw > 0
+            ? ` (Nothing will highlight — see the per-suggestion reasons above.)`
+            : "")
+      );
+      return resolved;
     });
+  }
+
+  /**
+   * One model call over one chunk of text (a single sentence in per-sentence
+   * mode, the whole paragraph otherwise), returning the raw, still-unresolved
+   * suggestion objects the model emitted.
+   *
+   * Errors are contained here rather than aborting the whole run: in
+   * per-sentence mode a single sentence that produces unparseable JSON should
+   * cost that one sentence, not every other sentence's results. The failure is
+   * logged with the raw output so it stays distinguishable from a genuine
+   * "nothing wrong here".
+   */
+  private async runGrammarPass(
+    text: string,
+    effectiveVoiceprint: string | undefined,
+    perSentence: boolean,
+    label: string
+  ): Promise<any[]> {
+    let raw: string | undefined;
+    let context: any;
+    try {
+      const grammar = await this.getGrammar("grammar");
+      context = await this.model.createContext();
+      const session = new this.llamaCppModule.LlamaChatSession({
+        contextSequence: context.getSequence(),
+      });
+      const custom = this.getCustomPrompt("grammar");
+      raw = await session.prompt(
+        perSentence
+          ? buildSentenceGrammarPrompt(text, effectiveVoiceprint, custom)
+          : buildGrammarPrompt(text, effectiveVoiceprint, custom),
+        // The `analysis` scratchpad precedes the suggestions array, so the
+        // budget has to cover the model's reasoning as well as the output.
+        // Truncating mid-object yields invalid JSON and a silently empty
+        // result. A single sentence needs far less room than a paragraph.
+        { grammar, maxTokens: perSentence ? 768 : 2048 }
+      );
+      // `raw` is assigned from an `any`-typed call (session.prompt(), on the
+      // untyped node-llama-cpp session — see the class doc comment), so TS's
+      // control-flow narrowing falls back to the declared `string |
+      // undefined`; the assertion is safe because the assignment above always
+      // runs first within this try.
+      const parsed = JSON.parse(raw as string);
+      if (typeof parsed?.analysis === "string" && parsed.analysis.trim()) {
+        this.output.appendLine(
+          `  ${label} analysis: ${parsed.analysis.trim()}`
+        );
+      }
+      return Array.isArray(parsed?.suggestions) ? parsed.suggestions : [];
+    } catch (err) {
+      // Degrades to an empty result for this chunk, never an "error" status —
+      // that's reserved for model load/download failure, so one bad
+      // generation doesn't disable every open panel's buttons.
+      console.error("flow-manuscript: AI Grammar pass failed", err);
+      this.output.appendLine(
+        `  ${label} FAILED: ${err instanceof Error ? err.message : String(err)}` +
+          (raw !== undefined ? `\n    raw model output: ${raw}` : "")
+      );
+      return [];
+    } finally {
+      // Each pass gets a fresh context (a reused LlamaChatSession would carry
+      // the previous sentence forward as conversation history). Releasing it
+      // matters more now that one run can create dozens.
+      try {
+        context?.dispose?.();
+      } catch {
+        /* best-effort — see dispose()'s comment on node-llama-cpp's surface */
+      }
+    }
   }
 
   /** Review the current paragraph for developmental-craft notes (pacing,
@@ -420,17 +1029,24 @@ export class AiAssist implements vscode.Disposable {
     await this.ensureReady();
     return this.runQueued(async () => {
       if (this._status !== "ready" || !this.model || !this.llama) return [];
+      let raw: string | undefined;
       try {
         const grammar = await this.getGrammar("editor");
         const context = await this.model.createContext();
         const session = new this.llamaCppModule.LlamaChatSession({
           contextSequence: context.getSequence(),
         });
-        const raw = await session.prompt(
-          buildEditorPrompt(paragraphText, voiceprint),
+        raw = await session.prompt(
+          buildEditorPrompt(
+            paragraphText,
+            voiceprint,
+            this.getCustomPrompt("editor")
+          ),
           { grammar, maxTokens: 1024 }
         );
-        const parsed = JSON.parse(raw);
+        // See the matching comment in checkGrammar() above — same
+        // TS-narrowing quirk, same reasoning for why the assertion is safe.
+        const parsed = JSON.parse(raw as string);
         const rawNotes: any[] = Array.isArray(parsed?.notes)
           ? parsed.notes
           : [];
@@ -451,6 +1067,10 @@ export class AiAssist implements vscode.Disposable {
         return notes;
       } catch (err) {
         console.error("flow-manuscript: AI Editor review failed", err);
+        this.output.appendLine(
+          `[AI Editor] failed: ${err instanceof Error ? err.message : String(err)}` +
+            (raw !== undefined ? `\nraw model output: ${raw}` : "")
+        );
         return [];
       }
     });
@@ -458,18 +1078,10 @@ export class AiAssist implements vscode.Disposable {
 
   dispose() {
     this._onDidChangeStatus.dispose();
-    // Best-effort — node-llama-cpp's dispose surface wasn't exercised by the
-    // Phase 0 spikes, so guard defensively rather than assume the exact
-    // method names.
-    try {
-      this.model?.dispose?.();
-    } catch {
-      /* ignore */
+    this.output.dispose();
+    for (const d of this.disposables) {
+      d.dispose();
     }
-    try {
-      this.llama?.dispose?.();
-    } catch {
-      /* ignore */
-    }
+    this.teardownModel();
   }
 }

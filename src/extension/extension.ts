@@ -79,6 +79,11 @@ export async function activate(context: vscode.ExtensionContext) {
   // for the one-time model download.
   const aiAssist = new AiAssist(context);
   context.subscriptions.push(aiAssist);
+  context.subscriptions.push(
+    vscode.commands.registerCommand("flowManuscript.showAiOutput", () =>
+      aiAssist.showOutput()
+    )
+  );
 
   // Register the tree view provider immediately and unconditionally, so the
   // view always has a data provider (otherwise VS Code shows "no data

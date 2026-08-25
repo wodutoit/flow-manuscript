@@ -89,6 +89,10 @@
         "command": "flowManuscript.moveSceneToAct",
         "title": "Move to Act…",
         "icon": "$(arrow-right)"
+      },
+      {
+        "command": "flowManuscript.showAiOutput",
+        "title": "Flow Manuscript: Show AI Output Log"
       }
     ],
     "viewsContainers": {
@@ -115,13 +119,71 @@
           "type": "boolean",
           "default": false,
           "scope": "application",
-          "description": "Enable local AI grammar/style assist (AI Grammar, AI Editor) in the scene editor. This downloads a ~1 GB language model to this machine the first time you open the Flow Manuscript view with it on — turning the setting on by itself doesn't trigger anything, and no data ever leaves this machine."
+          "description": "Enable local AI grammar/style assist (AI Grammar, AI Editor) in the scene editor. This downloads a language model to this machine (~2.4 GB for the default, see flowManuscript.ai.model) the first time you open the Flow Manuscript view with it on — turning the setting on by itself doesn't trigger anything, and no data ever leaves this machine."
         },
         "flowManuscript.ai.voiceprintPath": {
           "type": "string",
           "default": "",
           "scope": "application",
           "description": "Absolute path to a text/Markdown file describing your voice and style preferences, used to steer AI Grammar and AI Editor suggestions. A manuscript's own .claude/voiceprint.md, if present, overrides this global setting for that manuscript."
+        },
+        "flowManuscript.ai.useVoiceprintForGrammar": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "description": "Include your voiceprint/style guide in the AI Grammar prompt. Off by default: a voiceprint is usually written as imperative craft rules (\"Never use the dash\"), and smaller models tend to review the style guide itself rather than your prose — producing suggestions that quote the guide and therefore never appear in the editor. AI Editor always uses your voiceprint regardless of this setting, since that's where voice guidance actually matters. Turn this on if you're running a larger model that can keep the two blocks apart."
+        },
+        "flowManuscript.ai.grammarPerSentence": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "description": "Have AI Grammar review one sentence per model call instead of the whole paragraph at once. On by default, and considerably more accurate: given a whole paragraph, smaller models skim it and report nothing. The trade-off is speed — a review runs one inference per sentence, so an eight-sentence paragraph takes roughly eight times as long as a single pass. Turn this off for faster, less thorough checks."
+        },
+        "flowManuscript.ai.model": {
+          "type": "string",
+          "enum": [
+            "qwen2.5-1.5b-instruct",
+            "smollm2-1.7b-instruct",
+            "qwen2.5-3b-instruct",
+            "phi-3.5-mini-instruct",
+            "custom"
+          ],
+          "enumDescriptions": [
+            "Apache-2.0, ~1.1 GB. Smallest and fastest, but proved unreliable at catching wrong-word errors — it was the default until 2026-08-25.",
+            "Apache-2.0, ~1.1 GB. Similar size to Qwen 1.5B but a different vendor and training mix.",
+            "Qwen Research License (NON-COMMERCIAL USE ONLY). ~2.1 GB, more capable than the 1.5B models.",
+            "Default. MIT license, ~2.4 GB. Most capable of the built-in options and the most reliable at proofreading.",
+            "Use a GGUF model of your own choosing — also set flowManuscript.ai.customModelUrl and flowManuscript.ai.customModelFilename below."
+          ],
+          "default": "phi-3.5-mini-instruct",
+          "scope": "application",
+          "description": "Which local chat model AI Grammar and AI Editor use. Changing this takes effect immediately: the current model unloads, and the newly selected one downloads (if not already cached on this machine) and loads the next time the Flow Manuscript tree is visible or a review is requested. Everything runs on this machine; no data leaves it regardless of which model is selected."
+        },
+        "flowManuscript.ai.customModelUrl": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "description": "Direct HTTPS download URL to a GGUF chat model file. Used only when flowManuscript.ai.model is set to \"custom\". Must be a plain, ungated download link (no login or click-through license) since the download is unattended."
+        },
+        "flowManuscript.ai.customModelFilename": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "description": "Filename to save the custom model under (also used to detect an already-downloaded copy, so keep it stable once set). Used only when flowManuscript.ai.model is set to \"custom\"."
+        },
+        "flowManuscript.ai.grammarPrompt": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "scope": "application",
+          "description": "Override the instructions given to the model for AI Grammar. Leave blank to use the built-in default. Plain instructions have the paragraph (and voiceprint, if any) appended automatically; include a literal {{paragraph}} placeholder (and optionally {{voiceprint}}) for full control over the prompt's layout instead. The JSON fields the model must return (original/suggestion/reason/category) are enforced separately by the extension and can't be changed here — this setting only changes what the model is told to look for, not the output shape."
+        },
+        "flowManuscript.ai.editorPrompt": {
+          "type": "string",
+          "default": "",
+          "editPresentation": "multilineText",
+          "scope": "application",
+          "description": "Override the instructions given to the model for AI Editor. Leave blank to use the built-in default. Same placeholder rules as flowManuscript.ai.grammarPrompt. The JSON fields the model must return (note/category/quote/sentiment) are enforced separately and can't be changed here."
         }
       }
     },
