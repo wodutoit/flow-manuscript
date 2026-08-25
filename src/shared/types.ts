@@ -247,6 +247,10 @@ export interface AiEditorNote {
   category: "pacing" | "show-vs-tell" | "sensory" | "tension" | "pov" | "other";
   /** Short excerpt from the paragraph this note refers to, for context only. */
   quote?: string;
+  /** Whether this note is praise ("strength") or something to work on
+   * ("improvement") — lets the webview group notes so the author can focus
+   * on what needs attention rather than scanning a flat mixed list. */
+  sentiment: "strength" | "improvement";
 }
 
 export type AiStatus = "disabled" | "downloading" | "loading" | "ready" | "error";

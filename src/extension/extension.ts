@@ -75,7 +75,9 @@ export async function activate(context: vscode.ExtensionContext) {
 
   // Single process-wide AI assist singleton (not per-manuscript) — see
   // aiAssist.ts's class doc comment and the plan (tender-rolling-ullman.md).
-  const aiAssist = new AiAssist();
+  // Takes the extension context so it can target context.globalStorageUri
+  // for the one-time model download.
+  const aiAssist = new AiAssist(context);
   context.subscriptions.push(aiAssist);
 
   // Register the tree view provider immediately and unconditionally, so the
@@ -195,6 +197,39 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         const m = await getManager(rootKey);
         DiagramPanel.show(ext, m, rootKey, (nodeId) => openNode(rootKey, nodeId));
+      }
+    )
+  );
+
+  // --- command: create/open a manuscript's voiceprint file -----------------
+  // The per-manuscript .claude/voiceprint.md that manuscriptManager.ts's
+  // loadVoiceprint() reads (see resolveVoiceprint() in editorPanel.ts). This
+  // is the only way to create that file from the UI — seeds it with a short
+  // explanatory template on first use, then just opens it on every use after.
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "flowManuscript.editVoiceprint",
+      async (item?: FlowTreeItem) => {
+        if (!item?.manuscriptRoot) return;
+        const m = await getManager(item.manuscriptRoot);
+        const claudeDir = vscode.Uri.joinPath(m.rootUri, ".claude");
+        const uri = vscode.Uri.joinPath(claudeDir, "voiceprint.md");
+        try {
+          await vscode.workspace.fs.stat(uri);
+        } catch {
+          await vscode.workspace.fs.createDirectory(claudeDir);
+          const seed =
+            "# Voiceprint\n\n" +
+            "Describe your voice and style preferences here — tone, sentence " +
+            "rhythm, words or phrasing you want to avoid, anything AI Grammar " +
+            "and AI Editor should weigh their suggestions against.\n\n" +
+            "This file is optional. If you delete it, Flow Manuscript falls " +
+            "back to the global `flowManuscript.ai.voiceprintPath` setting, " +
+            "if any.\n";
+          await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(seed));
+        }
+        const doc = await vscode.workspace.openTextDocument(uri);
+        await vscode.window.showTextDocument(doc, { preview: false });
       }
     )
   );

@@ -1183,6 +1183,33 @@ export class ManuscriptManager {
     );
   }
 
+  private voiceprintUri(): vscode.Uri {
+    return vscode.Uri.joinPath(this.root, ".claude", "voiceprint.md");
+  }
+
+  /**
+   * Per-manuscript author style/voice notes, if this manuscript has them —
+   * mirrors the `.claude/custom-words.txt` convention: auto-detected if
+   * present, no scaffolding required, no error if absent. Returns
+   * `undefined` (not an empty string) when the file doesn't exist or is
+   * blank, so callers can tell "no voiceprint" apart from "an empty
+   * voiceprint file". Prepended as context to both the AI Grammar and AI
+   * Editor prompts by editorPanel.ts's `requestAiReview` handler, which also
+   * applies the size cap and the global-setting fallback — this method just
+   * reads the manuscript-local file.
+   */
+  async loadVoiceprint(): Promise<string | undefined> {
+    try {
+      const raw = dec.decode(
+        await vscode.workspace.fs.readFile(this.voiceprintUri())
+      );
+      const trimmed = raw.trim();
+      return trimmed || undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   /**
    * Read the .aff/.dic for the manuscript's language from the bundled
    * dictionary npm packages, which live in the extension's own node_modules.

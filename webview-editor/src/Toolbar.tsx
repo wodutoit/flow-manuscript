@@ -174,6 +174,14 @@ export function Toolbar({
         >
           ▤
         </Btn>
+        {aiBusy ? (
+          <span
+            className="tb__spinner"
+            role="status"
+            aria-label="AI review in progress"
+            title="AI review in progress…"
+          />
+        ) : null}
       </div>
 
       <div className="tb__group tb__group--sections">

@@ -5,6 +5,14 @@ import { webviewHtml } from "./webviewHtml";
 import { OVERVIEW_ID, type EditorToHost, type HostToEditor } from "../shared/types";
 import type { AiAssist } from "./aiAssist";
 
+const dec = new TextDecoder();
+
+/** Cap on the resolved voiceprint text (whichever source it came from)
+ * before it ever reaches AiAssist — protects the small model's limited
+ * context window from an oversized style-guide file crowding out the
+ * actual paragraph being reviewed. */
+const VOICEPRINT_MAX_CHARS = 2000;
+
 /**
  * One editor panel per (manuscript root, node id); reused if already open.
  * Keying on the manuscript root too (not just node id) matters because
@@ -149,6 +157,41 @@ export class EditorPanel {
     });
   }
 
+  /**
+   * Resolves the effective voiceprint for this manuscript: its own
+   * `.claude/voiceprint.md` if present, else the global
+   * `flowManuscript.ai.voiceprintPath` setting's file, else `undefined`.
+   * Truncated to `VOICEPRINT_MAX_CHARS` regardless of source before it's
+   * ever passed to AiAssist.
+   */
+  private async resolveVoiceprint(): Promise<string | undefined> {
+    let text = await this.manager.loadVoiceprint();
+    if (!text) {
+      const configuredPath = vscode.workspace
+        .getConfiguration("flowManuscript")
+        .get<string>("ai.voiceprintPath", "")
+        .trim();
+      if (configuredPath) {
+        try {
+          const raw = await vscode.workspace.fs.readFile(
+            vscode.Uri.file(configuredPath)
+          );
+          const trimmed = dec.decode(raw).trim();
+          text = trimmed || undefined;
+        } catch (err) {
+          console.error(
+            "flow-manuscript: failed to read global voiceprint file",
+            err
+          );
+        }
+      }
+    }
+    if (!text) return undefined;
+    return text.length > VOICEPRINT_MAX_CHARS
+      ? text.slice(0, VOICEPRINT_MAX_CHARS)
+      : text;
+  }
+
   private async sendDictionary() {
     try {
       const { language, aff, dic, customWords } =
@@ -175,17 +218,23 @@ export class EditorPanel {
       case "addCustomWord":
         await this.manager.addCustomWord(m.word);
         break;
-      case "requestAiReview":
+      case "requestAiReview": {
+        const voiceprint = await this.resolveVoiceprint();
+        if (this.disposed) break;
         if (m.mode === "grammar") {
-          const suggestions = await this.aiAssist.checkGrammar(m.text);
+          const suggestions = await this.aiAssist.checkGrammar(
+            m.text,
+            voiceprint
+          );
           if (this.disposed) break;
           this.post({ type: "aiGrammarSuggestions", suggestions });
         } else {
-          const notes = await this.aiAssist.reviewAsEditor(m.text);
+          const notes = await this.aiAssist.reviewAsEditor(m.text, voiceprint);
           if (this.disposed) break;
           this.post({ type: "aiEditorNotes", notes });
         }
         break;
+      }
       case "saveBody":
         if (m.nodeId === OVERVIEW_ID) {
           await this.manager.saveOverviewBody(m.body);

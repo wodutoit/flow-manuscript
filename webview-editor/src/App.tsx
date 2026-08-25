@@ -129,19 +129,72 @@ interface AiEditorNoteItem extends AiEditorNote {
  * floats above the toolbar/editor content but is not an OS-level window and
  * can't float above other VS Code panes or other applications.
  */
+/** Floors on how small a drag/resize can shrink the panel — small enough to
+ * still show the header and a line or two of a note, not so small it can be
+ * dragged into uselessness. */
+const AI_NOTES_MIN_WIDTH = 220;
+const AI_NOTES_MIN_HEIGHT = 160;
+
+/** One row in the notes list — shared by both the "Needs improvement" and
+ * "Strengths" groups below, so the checkbox/tag/quote markup isn't
+ * duplicated. `index` is the note's position in the *original* flat `notes`
+ * array (not its position within its group), since `onToggle` and React's
+ * `key` both need the stable original index. */
+function AiNoteRow({
+  note,
+  index,
+  onToggle,
+}: {
+  note: AiEditorNoteItem;
+  index: number;
+  onToggle: (index: number) => void;
+}) {
+  return (
+    <label
+      className={`ai-notes__item${
+        note.checked ? " ai-notes__item--checked" : ""
+      }`}
+    >
+      <input
+        type="checkbox"
+        className="ai-notes__checkbox"
+        checked={note.checked}
+        onChange={() => onToggle(index)}
+      />
+      <div className="ai-notes__item-content">
+        <span className={`ai-notes__tag ai-notes__tag--${note.category}`}>
+          {note.category}
+        </span>
+        <div className="ai-notes__text">{note.note}</div>
+        {note.quote ? (
+          <div className="ai-notes__quote">“{note.quote}”</div>
+        ) : null}
+      </div>
+    </label>
+  );
+}
+
 function AiNotesPanel({
   notes,
   position,
+  size,
   onDrag,
+  onResize,
   onClose,
   onToggle,
 }: {
   notes: AiEditorNoteItem[];
   position: { x: number; y: number };
+  size: { width: number; height: number };
   onDrag: (pos: { x: number; y: number }) => void;
+  onResize: (size: { width: number; height: number }) => void;
   onClose: () => void;
   onToggle: (index: number) => void;
 }) {
+  // Strengths default collapsed — the point of grouping is to let the author
+  // focus on what needs work; praise is a click away, not competing for
+  // attention at the top of the list.
+  const [strengthsOpen, setStrengthsOpen] = useState(false);
   const dragState = useRef<{
     startX: number;
     startY: number;
@@ -172,8 +225,63 @@ function AiNotesPanel({
     window.addEventListener("mouseup", onUp);
   };
 
+  const resizeState = useRef<{
+    startX: number;
+    startY: number;
+    origW: number;
+    origH: number;
+  } | null>(null);
+
+  const onResizeHandleMouseDown = (e: React.MouseEvent) => {
+    // Don't let this bubble up into the header's own drag handler — resizing
+    // and moving are different gestures, from different corners.
+    e.stopPropagation();
+    resizeState.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      origW: size.width,
+      origH: size.height,
+    };
+    const onMove = (ev: MouseEvent) => {
+      if (!resizeState.current) return;
+      onResize({
+        width: Math.max(
+          AI_NOTES_MIN_WIDTH,
+          resizeState.current.origW + (ev.clientX - resizeState.current.startX)
+        ),
+        height: Math.max(
+          AI_NOTES_MIN_HEIGHT,
+          resizeState.current.origH + (ev.clientY - resizeState.current.startY)
+        ),
+      });
+    };
+    const onUp = () => {
+      resizeState.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  // Group by sentiment, keeping each note's original array index (needed by
+  // onToggle/key) rather than its position within the group.
+  const improvementIdx: number[] = [];
+  const strengthIdx: number[] = [];
+  notes.forEach((n, i) =>
+    (n.sentiment === "strength" ? strengthIdx : improvementIdx).push(i)
+  );
+
   return (
-    <div className="ai-notes" style={{ left: position.x, top: position.y }}>
+    <div
+      className="ai-notes"
+      style={{
+        left: position.x,
+        top: position.y,
+        width: size.width,
+        height: size.height,
+      }}
+    >
       <div className="ai-notes__header" onMouseDown={onHeaderMouseDown}>
         <span>AI Editor notes</span>
         <button
@@ -189,34 +297,64 @@ function AiNotesPanel({
         {notes.length === 0 ? (
           <div className="ai-notes__empty">No notes for this paragraph.</div>
         ) : (
-          notes.map((n, i) => (
-            <label
-              className={`ai-notes__item${
-                n.checked ? " ai-notes__item--checked" : ""
-              }`}
-              key={i}
-            >
-              <input
-                type="checkbox"
-                className="ai-notes__checkbox"
-                checked={n.checked}
-                onChange={() => onToggle(i)}
-              />
-              <div className="ai-notes__item-content">
-                <span
-                  className={`ai-notes__tag ai-notes__tag--${n.category}`}
-                >
-                  {n.category}
-                </span>
-                <div className="ai-notes__text">{n.note}</div>
-                {n.quote ? (
-                  <div className="ai-notes__quote">“{n.quote}”</div>
-                ) : null}
+          <>
+            <div className="ai-notes__group ai-notes__group--improvement">
+              <div className="ai-notes__group-header">
+                Needs improvement ({improvementIdx.length})
               </div>
-            </label>
-          ))
+              {improvementIdx.length === 0 ? (
+                <div className="ai-notes__empty">
+                  Nothing flagged — see Strengths below.
+                </div>
+              ) : (
+                improvementIdx.map((i) => (
+                  <AiNoteRow
+                    key={i}
+                    note={notes[i]}
+                    index={i}
+                    onToggle={onToggle}
+                  />
+                ))
+              )}
+            </div>
+
+            {strengthIdx.length > 0 ? (
+              <div className="ai-notes__group ai-notes__group--strengths">
+                <button
+                  type="button"
+                  className="ai-notes__group-header ai-notes__group-header--toggle"
+                  onClick={() => setStrengthsOpen((v) => !v)}
+                  aria-expanded={strengthsOpen}
+                >
+                  <span
+                    className={`ai-notes__chevron${
+                      strengthsOpen ? " ai-notes__chevron--open" : ""
+                    }`}
+                  >
+                    ▸
+                  </span>
+                  Strengths ({strengthIdx.length})
+                </button>
+                {strengthsOpen
+                  ? strengthIdx.map((i) => (
+                      <AiNoteRow
+                        key={i}
+                        note={notes[i]}
+                        index={i}
+                        onToggle={onToggle}
+                      />
+                    ))
+                  : null}
+              </div>
+            ) : null}
+          </>
         )}
       </div>
+      <div
+        className="ai-notes__resize"
+        onMouseDown={onResizeHandleMouseDown}
+        title="Drag to resize"
+      />
     </div>
   );
 }
@@ -251,6 +389,10 @@ export default function App() {
   const [aiEditorPanelPos, setAiEditorPanelPos] = useState(() => ({
     x: Math.max(20, window.innerWidth - 340),
     y: 80,
+  }));
+  const [aiEditorPanelSize, setAiEditorPanelSize] = useState(() => ({
+    width: 320,
+    height: 380,
   }));
 
   const editor = useEditor({
@@ -618,7 +760,9 @@ export default function App() {
         <AiNotesPanel
           notes={aiEditorNotes}
           position={aiEditorPanelPos}
+          size={aiEditorPanelSize}
           onDrag={setAiEditorPanelPos}
+          onResize={setAiEditorPanelSize}
           onClose={() => setAiEditorPanelOpen(false)}
           onToggle={toggleAiEditorNote}
         />

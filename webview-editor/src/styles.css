@@ -169,6 +169,25 @@ body,
   background: var(--vscode-button-secondaryHoverBackground);
 }
 
+/* Small inline spinner shown next to the AI buttons while a review is
+ * in flight (AI Grammar / AI Editor share one busy flag). */
+.tb__spinner {
+  display: inline-block;
+  width: 13px;
+  height: 13px;
+  margin-left: 4px;
+  border-radius: 50%;
+  border: 2px solid var(--vscode-panel-border);
+  border-top-color: var(--vscode-charts-blue, #3794ff);
+  animation: tb__spin 0.7s linear infinite;
+}
+
+@keyframes tb__spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* ---- editing surface ---- */
 .editor__content {
   flex: 1;
@@ -354,12 +373,15 @@ body,
   border: 1px solid var(--vscode-panel-border);
 }
 
-/* ---- AI Editor notes (floating, draggable, non-modal panel) ---- */
+/* ---- AI Editor notes (floating, draggable, resizable, non-modal panel) ---- */
+/* width/height come from inline styles (React-controlled state) so the
+ * panel can be resized by dragging its corner handle; these are just sane
+ * bounds so it never renders larger than the viewport. */
 .ai-notes {
   position: fixed;
   z-index: 30;
-  width: 300px;
-  max-height: 70vh;
+  max-width: 90vw;
+  max-height: 90vh;
   display: flex;
   flex-direction: column;
   border-radius: 6px;
@@ -402,8 +424,85 @@ body,
 }
 
 .ai-notes__body {
+  flex: 1;
   overflow-y: auto;
   padding: 8px 10px;
+}
+
+/* Bottom-right drag-to-resize corner handle. */
+.ai-notes__resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+}
+
+.ai-notes__resize::after {
+  content: "";
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid var(--vscode-panel-border);
+  border-bottom: 2px solid var(--vscode-panel-border);
+  opacity: 0.8;
+}
+
+/* Groups the note list into "Needs improvement" (primary) vs "Strengths"
+ * (secondary, collapsed by default) so the author can focus on what needs
+ * work instead of scanning a flat mixed list. */
+.ai-notes__group + .ai-notes__group {
+  margin-top: 10px;
+}
+
+.ai-notes__group-header {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.6;
+  padding: 4px 0;
+}
+
+.ai-notes__group--strengths {
+  border-top: 1px solid var(--vscode-panel-border);
+  padding-top: 6px;
+}
+
+.ai-notes__group-header--toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  font: inherit;
+  border: none;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ai-notes__group-header--toggle:hover {
+  opacity: 1;
+}
+
+.ai-notes__chevron {
+  display: inline-block;
+  transition: transform 0.1s ease;
+  font-size: 9px;
+}
+
+.ai-notes__chevron--open {
+  transform: rotate(90deg);
+}
+
+/* Strength rows read as praise, not a to-do — quieter than the default
+ * (improvement) rows so they don't compete for attention when expanded. */
+.ai-notes__group--strengths .ai-notes__item {
+  opacity: 0.8;
 }
 
 .ai-notes__item {
