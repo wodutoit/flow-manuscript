@@ -191,7 +191,16 @@ export type EditorToHost =
   | { type: "renameNode"; nodeId: string; newName: string }
   | { type: "moveSceneToAct"; sceneId: string; actId: string }
   | { type: "requestDictionary" }
-  | { type: "addCustomWord"; word: string };
+  | { type: "addCustomWord"; word: string }
+  | {
+      type: "requestAiReview";
+      mode: "grammar" | "editor";
+      nodeId: string;
+      text: string;
+      /** Absolute ProseMirror doc start position of this paragraph; only
+       * needed for "grammar" mode's offset mapping back onto the doc. */
+      from: number;
+    };
 
 /** Minimal act info the editor needs to render its act selector. */
 export interface EditorActRef {
@@ -199,6 +208,48 @@ export interface EditorActRef {
   name: string;
   order: number;
 }
+
+/**
+ * A single AI Grammar suggestion, as emitted by the model. Deliberately no
+ * `start`/`end` here — small instruct models are unreliable at emitting
+ * correct integer character offsets even under grammar-constrained decoding
+ * (the grammar enforces JSON syntax, not correct content). The host resolves
+ * the real span itself after parsing, via `paragraphText.indexOf(original)`;
+ * see `AiResolvedSuggestion` for the version that carries that resolved span
+ * over the wire to the webview.
+ */
+export interface AiSuggestion {
+  original: string;
+  suggestion: string;
+  reason: string;
+  category: "grammar" | "clarity" | "tone" | "wordiness";
+}
+
+/**
+ * `AiSuggestion` widened with the character span the host resolved via
+ * `indexOf` against the paragraph text (relative to the paragraph, not the
+ * document — the webview applies `docPos = from + charOffset` using the
+ * `from` it sent in `requestAiReview`). Suggestions the host couldn't locate
+ * in the paragraph (model paraphrased instead of quoting exactly) are
+ * dropped before this type is ever constructed.
+ */
+export interface AiResolvedSuggestion extends AiSuggestion {
+  start: number;
+  end: number;
+}
+
+/**
+ * A single AI Editor (developmental-craft) note. Read-only — never rendered
+ * as a decoration or mapped to a doc position. `quote` is illustrative only.
+ */
+export interface AiEditorNote {
+  note: string;
+  category: "pacing" | "show-vs-tell" | "sensory" | "tension" | "pov" | "other";
+  /** Short excerpt from the paragraph this note refers to, for context only. */
+  quote?: string;
+}
+
+export type AiStatus = "disabled" | "downloading" | "loading" | "ready" | "error";
 
 // host -> Editor webview
 export type HostToEditor =
@@ -218,4 +269,7 @@ export type HostToEditor =
       aff: string; // affix file contents (UTF-8)
       dic: string; // dictionary file contents (UTF-8)
       customWords: string[];
-    };
+    }
+  | { type: "aiGrammarSuggestions"; suggestions: AiResolvedSuggestion[] }
+  | { type: "aiEditorNotes"; notes: AiEditorNote[] }
+  | { type: "aiStatus"; status: AiStatus; progress?: number; message?: string };

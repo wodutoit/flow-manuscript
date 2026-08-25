@@ -3,6 +3,7 @@ import * as path from "path";
 import { ManuscriptManager } from "./manuscriptManager";
 import { webviewHtml } from "./webviewHtml";
 import { OVERVIEW_ID, type EditorToHost, type HostToEditor } from "../shared/types";
+import type { AiAssist } from "./aiAssist";
 
 /**
  * One editor panel per (manuscript root, node id); reused if already open.
@@ -34,7 +35,8 @@ export class EditorPanel {
     extensionUri: vscode.Uri,
     manager: ManuscriptManager,
     rootKey: string,
-    nodeId: string
+    nodeId: string,
+    aiAssist: AiAssist
   ) {
     const key = `${rootKey}::${nodeId}`;
     const existing = EditorPanel.panels.get(key);
@@ -68,9 +70,11 @@ export class EditorPanel {
     );
     EditorPanel.panels.set(
       key,
-      new EditorPanel(panel, extensionUri, manager, key, nodeId, bookName)
+      new EditorPanel(panel, extensionUri, manager, key, nodeId, bookName, aiAssist)
     );
   }
+
+  private disposed = false;
 
   private constructor(
     panel: vscode.WebviewPanel,
@@ -78,7 +82,8 @@ export class EditorPanel {
     private readonly manager: ManuscriptManager,
     private readonly key: string,
     private readonly nodeId: string,
-    private readonly bookName: string
+    private readonly bookName: string,
+    private readonly aiAssist: AiAssist
   ) {
     this.panel = panel;
     panel.webview.html = webviewHtml(
@@ -93,6 +98,12 @@ export class EditorPanel {
       this.disposables
     );
     panel.onDidDispose(() => this.dispose(), null, this.disposables);
+    this.disposables.push(
+      aiAssist.onDidChangeStatus(() => {
+        if (this.disposed) return;
+        this.post({ type: "aiStatus", status: aiAssist.status });
+      })
+    );
   }
 
   private post(msg: HostToEditor) {
@@ -152,6 +163,9 @@ export class EditorPanel {
   private async onMessage(m: EditorToHost) {
     switch (m.type) {
       case "ready":
+        this.post({ type: "aiStatus", status: this.aiAssist.status });
+        await this.sendDoc();
+        break;
       case "requestDoc":
         await this.sendDoc();
         break;
@@ -160,6 +174,17 @@ export class EditorPanel {
         break;
       case "addCustomWord":
         await this.manager.addCustomWord(m.word);
+        break;
+      case "requestAiReview":
+        if (m.mode === "grammar") {
+          const suggestions = await this.aiAssist.checkGrammar(m.text);
+          if (this.disposed) break;
+          this.post({ type: "aiGrammarSuggestions", suggestions });
+        } else {
+          const notes = await this.aiAssist.reviewAsEditor(m.text);
+          if (this.disposed) break;
+          this.post({ type: "aiEditorNotes", notes });
+        }
         break;
       case "saveBody":
         if (m.nodeId === OVERVIEW_ID) {
@@ -190,6 +215,7 @@ export class EditorPanel {
   }
 
   dispose() {
+    this.disposed = true;
     EditorPanel.panels.delete(this.key);
     this.panel.dispose();
     while (this.disposables.length) this.disposables.pop()?.dispose();

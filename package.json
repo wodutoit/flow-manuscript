@@ -84,10 +84,6 @@
         "command": "flowManuscript.moveSceneToAct",
         "title": "Move to Act…",
         "icon": "$(arrow-right)"
-      },
-      {
-        "command": "flowManuscript.debug.aiSpike",
-        "title": "Flow Manuscript: Debug AI Spike (temporary — Phase 0)"
       }
     ],
     "viewsContainers": {
