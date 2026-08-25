@@ -17,7 +17,20 @@ import {
   createSpellcheckPlugin,
   misspelledWordAt,
 } from "./spellcheckPlugin";
-import type { EditorKind, EditorActRef } from "../../src/shared/types";
+import {
+  createAiSuggestPlugin,
+  setAiDecorations,
+  aiSuggestionAt,
+  findCurrentParagraph,
+  type AiSuggestionDeco,
+} from "./aiSuggestPlugin";
+import type {
+  AiEditorNote,
+  AiStatus,
+  AiSuggestion,
+  EditorKind,
+  EditorActRef,
+} from "../../src/shared/types";
 
 // Module-level singletons: one checker for the webview, and a holder for the
 // plugin's manual-refresh function so we can re-run checking after load.
@@ -35,6 +48,13 @@ const SpellcheckExtension = Extension.create({
   },
 });
 
+const AiSuggestExtension = Extension.create({
+  name: "flowAiSuggest",
+  addProseMirrorPlugins() {
+    return [createAiSuggestPlugin()];
+  },
+});
+
 interface SuggestBox {
   x: number;
   y: number;
@@ -42,6 +62,17 @@ interface SuggestBox {
   from: number;
   to: number;
   suggestions: string[];
+}
+
+/** AI Grammar's popover — separate from `SuggestBox` above: a different
+ * interaction shape (click-to-open on a specific decorated range, per-span
+ * reason/category) rather than spellcheck's right-click/flat-word-list. */
+interface AiSuggestBox {
+  x: number;
+  y: number;
+  from: number;
+  to: number;
+  suggestion: AiSuggestion;
 }
 
 interface DocState {
@@ -64,12 +95,163 @@ function useDebouncedCallback<T extends (...a: any[]) => void>(fn: T, ms: number
   );
 }
 
+function aiStatusLabel(status: AiStatus): string {
+  switch (status) {
+    case "disabled":
+      return "AI: off";
+    case "downloading":
+      return "AI: downloading model…";
+    case "loading":
+      return "AI: loading model…";
+    case "ready":
+      return "AI: ready";
+    case "error":
+      return "AI: error";
+  }
+}
+
+/** An AI Editor note plus whether the user has ticked it off as addressed.
+ * The checkbox is purely a local, per-viewing "worked through this" mark —
+ * it's not sent back to the host and doesn't survive a re-run: a fresh
+ * `aiEditorNotes` response always replaces the whole list (see the plan's
+ * "replaces wholesale, never appends" rule), so every note starts unchecked
+ * again each time a review actually runs. */
+interface AiEditorNoteItem extends AiEditorNote {
+  checked: boolean;
+}
+
+/**
+ * Floating, draggable panel of AI Editor (developmental-craft) notes.
+ * Deliberately NOT a backdrop-modal like `.suggest`/`.ai-suggest` — no
+ * click-outside-to-close — the point is it survives clicking back into the
+ * editor to make an edit while working through the list. "Always on top"
+ * here means a high z-index within the webview's own stacking context; it
+ * floats above the toolbar/editor content but is not an OS-level window and
+ * can't float above other VS Code panes or other applications.
+ */
+function AiNotesPanel({
+  notes,
+  position,
+  onDrag,
+  onClose,
+  onToggle,
+}: {
+  notes: AiEditorNoteItem[];
+  position: { x: number; y: number };
+  onDrag: (pos: { x: number; y: number }) => void;
+  onClose: () => void;
+  onToggle: (index: number) => void;
+}) {
+  const dragState = useRef<{
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+  } | null>(null);
+
+  const onHeaderMouseDown = (e: React.MouseEvent) => {
+    dragState.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      origX: position.x,
+      origY: position.y,
+    };
+    const onMove = (ev: MouseEvent) => {
+      if (!dragState.current) return;
+      onDrag({
+        x: dragState.current.origX + (ev.clientX - dragState.current.startX),
+        y: dragState.current.origY + (ev.clientY - dragState.current.startY),
+      });
+    };
+    const onUp = () => {
+      dragState.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  return (
+    <div className="ai-notes" style={{ left: position.x, top: position.y }}>
+      <div className="ai-notes__header" onMouseDown={onHeaderMouseDown}>
+        <span>AI Editor notes</span>
+        <button
+          className="ai-notes__close"
+          onClick={onClose}
+          title="Close"
+          type="button"
+        >
+          ×
+        </button>
+      </div>
+      <div className="ai-notes__body">
+        {notes.length === 0 ? (
+          <div className="ai-notes__empty">No notes for this paragraph.</div>
+        ) : (
+          notes.map((n, i) => (
+            <label
+              className={`ai-notes__item${
+                n.checked ? " ai-notes__item--checked" : ""
+              }`}
+              key={i}
+            >
+              <input
+                type="checkbox"
+                className="ai-notes__checkbox"
+                checked={n.checked}
+                onChange={() => onToggle(i)}
+              />
+              <div className="ai-notes__item-content">
+                <span
+                  className={`ai-notes__tag ai-notes__tag--${n.category}`}
+                >
+                  {n.category}
+                </span>
+                <div className="ai-notes__text">{n.note}</div>
+                {n.quote ? (
+                  <div className="ai-notes__quote">“{n.quote}”</div>
+                ) : null}
+              </div>
+            </label>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [doc, setDoc] = useState<DocState | null>(null);
   const [fm, setFm] = useState<Record<string, unknown>>({});
   const [saved, setSaved] = useState<"idle" | "saving" | "saved">("idle");
   const [suggest, setSuggest] = useState<SuggestBox | null>(null);
   const loadingRef = useRef(false);
+
+  // --- AI Grammar / AI Editor state ---------------------------------------
+  const [aiStatus, setAiStatus] = useState<AiStatus>("disabled");
+  // Both buttons share one busy flag: the host serializes AI Grammar and AI
+  // Editor requests through a single queue (see aiAssist.ts), so there is no
+  // real "run both at once" state — disabling both while either is in
+  // flight is the honest UI, not a distinct "queued" state.
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiSuggest, setAiSuggest] = useState<AiSuggestBox | null>(null);
+  const [aiGrammarItems, setAiGrammarItems] = useState<AiSuggestionDeco[]>([]);
+  // The paragraph's doc-start position captured at request time, so the
+  // response (which carries offsets relative to the paragraph text) can be
+  // converted back to absolute doc positions once it arrives.
+  const aiGrammarRequestFrom = useRef<number | null>(null);
+  // `null` = no review has run yet (the reopen button stays disabled);
+  // once set, a re-run always *replaces* it wholesale, never appends — see
+  // AiEditorNoteItem's doc comment for why that also resets every checkbox.
+  const [aiEditorNotes, setAiEditorNotes] = useState<
+    AiEditorNoteItem[] | null
+  >(null);
+  const [aiEditorPanelOpen, setAiEditorPanelOpen] = useState(false);
+  const [aiEditorPanelPos, setAiEditorPanelPos] = useState(() => ({
+    x: Math.max(20, window.innerWidth - 340),
+    y: 80,
+  }));
 
   const editor = useEditor({
     extensions: [
@@ -82,6 +264,7 @@ export default function App() {
       }),
       Placeholder.configure({ placeholder: "Start writing…" }),
       SpellcheckExtension,
+      AiSuggestExtension,
     ],
     editorProps: {
       attributes: {
@@ -139,6 +322,41 @@ export default function App() {
             if (refreshDecorations) refreshDecorations(editor.view);
           })
           .catch((e) => console.error("spellcheck load failed", e));
+      } else if (msg.type === "aiStatus") {
+        setAiStatus(msg.status);
+      } else if (msg.type === "aiGrammarSuggestions" && editor) {
+        setAiBusy(false);
+        const capturedFrom = aiGrammarRequestFrom.current;
+        if (capturedFrom == null) return;
+        const items: AiSuggestionDeco[] = [];
+        for (const s of msg.suggestions) {
+          const docFrom = capturedFrom + s.start;
+          const docTo = capturedFrom + s.end;
+          // Staleness guard: the user may have kept typing while the slow
+          // local inference was running — re-verify the span still holds
+          // the exact text the suggestion was computed against before
+          // trusting it, same shape of check as the host's own indexOf-
+          // not-found handling.
+          let current: string;
+          try {
+            current = editor.state.doc.textBetween(docFrom, docTo);
+          } catch {
+            continue; // position no longer exists in the doc at all
+          }
+          if (current !== s.original) continue;
+          items.push({ docFrom, docTo, suggestion: s });
+        }
+        setAiGrammarItems(items);
+        setAiDecorations(editor.view, items);
+      } else if (msg.type === "aiEditorNotes") {
+        setAiBusy(false);
+        // Always replaces wholesale — a re-run is meant to show the fresh
+        // notes, never append to the previous list — which is also why
+        // every checkbox starts unticked again on each new review.
+        setAiEditorNotes(msg.notes.map((n) => ({ ...n, checked: false })));
+        // Re-running is meant to show you the fresh notes, not silently
+        // update a closed panel — force it open.
+        setAiEditorPanelOpen(true);
       }
     });
     post({ type: "ready" });
@@ -199,6 +417,99 @@ export default function App() {
     post({ type: "addCustomWord", word: suggest.word });
     if (editor && refreshDecorations) refreshDecorations(editor.view);
     setSuggest(null);
+  };
+
+  // --- AI Grammar / AI Editor handlers ------------------------------------
+
+  const onAiGrammar = () => {
+    if (!editor || !doc || aiBusy || aiStatus !== "ready") return;
+    const para = findCurrentParagraph(editor.state);
+    if (!para) return; // cursor isn't in a plain paragraph — silently no-op
+    aiGrammarRequestFrom.current = para.from;
+    setAiBusy(true);
+    post({
+      type: "requestAiReview",
+      mode: "grammar",
+      nodeId: doc.nodeId,
+      text: para.text,
+      from: para.from,
+    });
+  };
+
+  const onAiEditor = () => {
+    if (!editor || !doc || aiBusy || aiStatus !== "ready") return;
+    const para = findCurrentParagraph(editor.state);
+    if (!para) return;
+    setAiBusy(true);
+    post({
+      type: "requestAiReview",
+      mode: "editor",
+      nodeId: doc.nodeId,
+      text: para.text,
+      from: para.from,
+    });
+  };
+
+  const onShowAiEditorNotes = () => {
+    // Just redisplays what's already in memory — no model call, so it works
+    // even mid-review or if AI status has since gone stale.
+    setAiEditorPanelOpen(true);
+  };
+
+  const toggleAiEditorNote = (index: number) => {
+    setAiEditorNotes((prev) => {
+      if (!prev) return prev;
+      const next = prev.slice();
+      next[index] = { ...next[index], checked: !next[index].checked };
+      return next;
+    });
+  };
+
+  // Left-click on an AI Grammar decoration opens its popover; clicks
+  // elsewhere are left alone so normal cursor placement still works.
+  const onEditorClick = (e: React.MouseEvent) => {
+    if (!editor) return;
+    const hit = aiSuggestionAt(editor.view, e.target);
+    if (!hit) return;
+    e.preventDefault();
+    setAiSuggest({
+      x: e.clientX,
+      y: e.clientY,
+      from: hit.from,
+      to: hit.to,
+      suggestion: hit.suggestion,
+    });
+  };
+
+  const acceptAiSuggestion = () => {
+    if (!editor || !aiSuggest) return;
+    editor
+      .chain()
+      .focus()
+      .insertContentAt(
+        { from: aiSuggest.from, to: aiSuggest.to },
+        aiSuggest.suggestion.suggestion
+      )
+      .run();
+    // The edit above changes the doc, which the AI Grammar plugin treats as
+    // invalidating every decoration, not just this one (see
+    // aiSuggestPlugin.ts's docChanged handling) — keep this component's own
+    // bookkeeping in sync with that rather than trying to partially remap.
+    setAiGrammarItems([]);
+    setAiSuggest(null);
+  };
+
+  const dismissAiSuggestion = () => {
+    if (!editor || !aiSuggest) return;
+    // No doc edit here, so the other decorations' positions are still
+    // valid — just drop this one and re-render the rest.
+    const remaining = aiGrammarItems.filter(
+      (item) =>
+        !(item.docFrom === aiSuggest.from && item.docTo === aiSuggest.to)
+    );
+    setAiGrammarItems(remaining);
+    setAiDecorations(editor.view, remaining);
+    setAiSuggest(null);
   };
 
   if (!doc || !editor) {
@@ -278,13 +589,78 @@ export default function App() {
         <div className="fm__status">
           {saved === "saving" ? "Saving…" : saved === "saved" ? "Saved" : ""}
         </div>
+        <div className={`ai-status ai-status--${aiStatus}`}>
+          {aiStatusLabel(aiStatus)}
+        </div>
       </header>
 
-      <Toolbar editor={editor} kind={doc.kind} onInsertSection={insertSection} />
+      <Toolbar
+        editor={editor}
+        kind={doc.kind}
+        onInsertSection={insertSection}
+        aiStatus={aiStatus}
+        aiBusy={aiBusy}
+        hasAiEditorNotes={aiEditorNotes !== null}
+        onAiGrammar={onAiGrammar}
+        onAiEditor={onAiEditor}
+        onShowAiEditorNotes={onShowAiEditorNotes}
+      />
 
-      <div className="editor__content" onContextMenu={onContextMenu}>
+      <div
+        className="editor__content"
+        onContextMenu={onContextMenu}
+        onClick={onEditorClick}
+      >
         <EditorContent editor={editor} />
       </div>
+
+      {aiEditorPanelOpen && aiEditorNotes ? (
+        <AiNotesPanel
+          notes={aiEditorNotes}
+          position={aiEditorPanelPos}
+          onDrag={setAiEditorPanelPos}
+          onClose={() => setAiEditorPanelOpen(false)}
+          onToggle={toggleAiEditorNote}
+        />
+      ) : null}
+
+      {aiSuggest ? (
+        <>
+          <div
+            className="suggest__backdrop"
+            onClick={() => setAiSuggest(null)}
+          />
+          <div
+            className="ai-suggest"
+            style={{ left: aiSuggest.x, top: aiSuggest.y }}
+            role="menu"
+          >
+            <div className="ai-suggest__category">
+              {aiSuggest.suggestion.category}
+            </div>
+            <div className="ai-suggest__diff">
+              <span className="ai-suggest__original">
+                {aiSuggest.suggestion.original}
+              </span>
+              <span className="ai-suggest__arrow">→</span>
+              <span className="ai-suggest__replacement">
+                {aiSuggest.suggestion.suggestion}
+              </span>
+            </div>
+            <div className="ai-suggest__reason">
+              {aiSuggest.suggestion.reason}
+            </div>
+            <div className="ai-suggest__actions">
+              <button className="suggest__item" onClick={acceptAiSuggestion}>
+                Accept
+              </button>
+              <button className="suggest__item" onClick={dismissAiSuggestion}>
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </>
+      ) : null}
 
       {suggest ? (
         <>

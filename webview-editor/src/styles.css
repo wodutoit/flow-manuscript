@@ -69,6 +69,33 @@ body,
   align-self: center;
 }
 
+/* AI status pill — rendered as its own element next to (not concatenated
+ * with) .fm__status, so Saving/Saved and AI status never fight for the same
+ * text node. */
+.ai-status {
+  font-size: 12px;
+  opacity: 0.5;
+  align-self: center;
+  margin-left: 10px;
+  white-space: nowrap;
+}
+
+.ai-status--ready {
+  opacity: 1;
+  color: var(--vscode-terminal-ansiGreen, #89d185);
+}
+
+.ai-status--downloading,
+.ai-status--loading {
+  opacity: 1;
+  color: var(--vscode-terminal-ansiYellow, #e2c08d);
+}
+
+.ai-status--error {
+  opacity: 1;
+  color: var(--vscode-errorForeground, #f14c4c);
+}
+
 /* ---- toolbar ---- */
 .tb {
   display: flex;
@@ -253,4 +280,193 @@ body,
   height: 1px;
   margin: 4px 2px;
   background: var(--vscode-menu-separatorBackground, var(--vscode-panel-border));
+}
+
+/* ---- AI Grammar ---- */
+/* A different color from .spell-error so the two decoration kinds read as
+ * distinct at a glance even when they overlap the same word. */
+.ai-suggest-error {
+  text-decoration: underline wavy var(--vscode-charts-blue, #3794ff);
+  text-decoration-skip-ink: none;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.ai-suggest {
+  position: fixed;
+  z-index: 41;
+  min-width: 220px;
+  max-width: 320px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+  background: var(--vscode-menu-background, var(--vscode-editorWidget-background));
+  color: var(--vscode-menu-foreground, var(--vscode-foreground));
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+.ai-suggest__category {
+  display: inline-block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  margin-bottom: 6px;
+}
+
+.ai-suggest__diff {
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+
+.ai-suggest__original {
+  text-decoration: line-through;
+  opacity: 0.7;
+}
+
+.ai-suggest__arrow {
+  margin: 0 5px;
+  opacity: 0.6;
+}
+
+.ai-suggest__replacement {
+  font-weight: 600;
+}
+
+.ai-suggest__reason {
+  font-size: 12px;
+  opacity: 0.75;
+  margin-bottom: 8px;
+}
+
+.ai-suggest__actions {
+  display: flex;
+  gap: 4px;
+}
+
+.ai-suggest__actions .suggest__item {
+  flex: 1;
+  text-align: center;
+  border: 1px solid var(--vscode-panel-border);
+}
+
+/* ---- AI Editor notes (floating, draggable, non-modal panel) ---- */
+.ai-notes {
+  position: fixed;
+  z-index: 30;
+  width: 300px;
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: 6px;
+  border: 1px solid var(--vscode-menu-border, var(--vscode-panel-border));
+  background: var(--vscode-editorWidget-background);
+  color: var(--vscode-editorWidget-foreground, var(--vscode-foreground));
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.ai-notes__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--vscode-panel-border);
+  cursor: grab;
+  user-select: none;
+}
+
+.ai-notes__header:active {
+  cursor: grabbing;
+}
+
+.ai-notes__close {
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 4px;
+  border: none;
+  background: transparent;
+  color: inherit;
+  opacity: 0.6;
+  cursor: pointer;
+}
+
+.ai-notes__close:hover {
+  opacity: 1;
+}
+
+.ai-notes__body {
+  overflow-y: auto;
+  padding: 8px 10px;
+}
+
+.ai-notes__item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 0;
+  cursor: pointer;
+}
+
+.ai-notes__item + .ai-notes__item {
+  border-top: 1px solid var(--vscode-panel-border);
+}
+
+.ai-notes__checkbox {
+  margin: 3px 0 0;
+  flex: none;
+  cursor: pointer;
+}
+
+.ai-notes__item-content {
+  min-width: 0;
+  flex: 1;
+}
+
+/* Ticked = "I've addressed this" — dim it and strike the note text, but
+ * keep it in place rather than removing it, so the list still reflects
+ * what the review actually found. */
+.ai-notes__item--checked {
+  opacity: 0.55;
+}
+
+.ai-notes__item--checked .ai-notes__text {
+  text-decoration: line-through;
+}
+
+.ai-notes__empty {
+  font-size: 12px;
+  opacity: 0.6;
+  padding: 6px 0;
+}
+
+.ai-notes__tag {
+  display: inline-block;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--vscode-badge-background);
+  color: var(--vscode-badge-foreground);
+  margin-bottom: 4px;
+}
+
+.ai-notes__text {
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
+.ai-notes__quote {
+  font-size: 12px;
+  font-style: italic;
+  opacity: 0.7;
+  margin-top: 4px;
 }
