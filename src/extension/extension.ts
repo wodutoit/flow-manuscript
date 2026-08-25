@@ -1,43 +1,88 @@
 import * as vscode from "vscode";
 import { ManuscriptManager } from "./manuscriptManager";
-import { ManuscriptTreeProvider } from "./treeProvider";
+import { ManuscriptTreeProvider, FlowTreeItem } from "./treeProvider";
 import { DiagramPanel } from "./diagramPanel";
 import { EditorPanel } from "./editorPanel";
 import { toSlug } from "./frontmatter";
 import type { ManuscriptMeta } from "../shared/types";
 
-let manager: ManuscriptManager | undefined;
+const FLOW_FILE = "outline.flow.json";
+
 let tree: ManuscriptTreeProvider | undefined;
+
+// ManuscriptManagers, cached per manuscript root folder. Multiple manuscripts
+// can be active at once — e.g. a "books" repo with one subfolder per book —
+// so there is no single global `manager` any more; every command/panel is
+// parameterized by which manuscript root it applies to.
+const managers = new Map<string, ManuscriptManager>();
 
 export async function activate(context: vscode.ExtensionContext) {
   const ext = context.extensionUri;
 
+  const getManager = async (rootKey: string): Promise<ManuscriptManager> => {
+    const existing = managers.get(rootKey);
+    if (existing) return existing;
+    const m = new ManuscriptManager(vscode.Uri.parse(rootKey), ext);
+    await m.load();
+    managers.set(rootKey, m);
+    return m;
+  };
+
+  /** A folder is a manuscript root iff it directly contains outline.flow.json. */
+  const isManuscriptRoot = async (uri: vscode.Uri): Promise<boolean> => {
+    try {
+      await vscode.workspace.fs.stat(vscode.Uri.joinPath(uri, FLOW_FILE));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  /**
+   * Finds every manuscript in the open workspace: each workspace folder
+   * itself (covers "I opened a single book's folder", the original
+   * behavior), plus each of its immediate subfolders (covers "I opened my
+   * `books` repo, which has one folder per book"). Not recursive beyond one
+   * level — that matches a flat `books/<book>/outline.flow.json` layout.
+   */
+  const discoverManuscriptRoots = async (): Promise<vscode.Uri[]> => {
+    const roots: vscode.Uri[] = [];
+    const seen = new Set<string>();
+    const add = (uri: vscode.Uri) => {
+      const key = uri.toString();
+      if (!seen.has(key)) {
+        seen.add(key);
+        roots.push(uri);
+      }
+    };
+    for (const folder of vscode.workspace.workspaceFolders ?? []) {
+      if (await isManuscriptRoot(folder.uri)) add(folder.uri);
+      try {
+        const entries = await vscode.workspace.fs.readDirectory(folder.uri);
+        for (const [name, type] of entries) {
+          if (type !== vscode.FileType.Directory) continue;
+          if (name.startsWith(".") || name === "node_modules") continue;
+          const sub = vscode.Uri.joinPath(folder.uri, name);
+          if (await isManuscriptRoot(sub)) add(sub);
+        }
+      } catch {
+        // Folder listing not available (e.g. an unusual virtual FS) — skip.
+      }
+    }
+    return roots;
+  };
+
   // Register the tree view provider immediately and unconditionally, so the
-  // view always has a data provider (otherwise VS Code shows "no data provider
-  // registered"). It starts empty and gains data once a manager is attached.
-  tree = new ManuscriptTreeProvider();
+  // view always has a data provider (otherwise VS Code shows "no data
+  // provider registered"). It discovers manuscripts lazily on first render.
+  tree = new ManuscriptTreeProvider(getManager, discoverManuscriptRoots);
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("flowManuscript.tree", tree)
   );
 
-  const ensureManager = async (): Promise<ManuscriptManager | undefined> => {
-    if (manager) return manager;
-    const folder = vscode.workspace.workspaceFolders?.[0];
-    if (!folder) {
-      vscode.window.showErrorMessage(
-        "Open a manuscript folder first (File \u2192 Open Folder)."
-      );
-      return undefined;
-    }
-    manager = new ManuscriptManager(folder.uri, ext);
-    await manager.load();
-    tree?.attach(manager);
-    return manager;
-  };
-
-  const openNode = (nodeId: string) => {
-    if (!manager) return;
-    EditorPanel.show(ext, manager, nodeId);
+  const openNode = async (rootKey: string, nodeId: string) => {
+    const m = await getManager(rootKey);
+    EditorPanel.show(ext, m, rootKey, nodeId);
   };
 
   // --- command: create a new manuscript ------------------------------------
@@ -66,6 +111,7 @@ export async function activate(context: vscode.ExtensionContext) {
       }
 
       await ManuscriptManager.scaffold(ext, target, meta);
+      tree?.refresh();
       const choice = await vscode.window.showInformationMessage(
         `Created manuscript "${meta.title}".`,
         "Open Folder"
@@ -97,15 +143,16 @@ export async function activate(context: vscode.ExtensionContext) {
 
         try {
           const summary = await ManuscriptManager.importFromFolder(root);
+          tree?.refresh();
           vscode.window.showInformationMessage(
             `Imported ${summary.scenes} scene(s) (${summary.ordered} ordered), ` +
               `${summary.characters} character(s), ${summary.places} place(s). ` +
-              `Open this folder to view the diagram.`
+              `It now shows in the Flow Manuscript view.`
           );
         } catch (e: any) {
           if (e && e.message === "exists") {
             vscode.window.showWarningMessage(
-              "This manuscript already has an outline.flow.json \u2014 import skipped so your existing diagram isn't overwritten."
+              "This manuscript already has an outline.flow.json — import skipped so your existing diagram isn't overwritten."
             );
           } else {
             vscode.window.showErrorMessage(
@@ -117,22 +164,30 @@ export async function activate(context: vscode.ExtensionContext) {
     )
   );
 
-  // --- command: open the diagram -------------------------------------------
+  // --- command: open the diagram for a manuscript ---------------------------
   context.subscriptions.push(
-    vscode.commands.registerCommand("flowManuscript.openDiagram", async () => {
-      const m = await ensureManager();
-      if (!m) return;
-      DiagramPanel.show(ext, m, openNode);
-    })
+    vscode.commands.registerCommand(
+      "flowManuscript.openDiagram",
+      async (arg?: string | FlowTreeItem) => {
+        const rootKey = typeof arg === "string" ? arg : arg?.manuscriptRoot;
+        if (!rootKey) {
+          vscode.window.showErrorMessage(
+            "Select a manuscript in the Flow Manuscript view first."
+          );
+          return;
+        }
+        const m = await getManager(rootKey);
+        DiagramPanel.show(ext, m, rootKey, (nodeId) => openNode(rootKey, nodeId));
+      }
+    )
   );
 
   // --- command: open a node in the editor ----------------------------------
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "flowManuscript.openNode",
-      async (nodeId: string) => {
-        await ensureManager();
-        openNode(nodeId);
+      async (rootKey: string, nodeId: string) => {
+        await openNode(rootKey, nodeId);
       }
     )
   );
@@ -144,19 +199,24 @@ export async function activate(context: vscode.ExtensionContext) {
       validateInput: (v) => (v.trim() ? undefined : "Name is required"),
     });
 
-  const addEntity = async (kind: "character" | "place") => {
-    const m = await ensureManager();
-    if (!m) return;
+  const addEntity = async (
+    kind: "character" | "place",
+    item?: FlowTreeItem
+  ) => {
+    if (!item?.manuscriptRoot) return;
+    const m = await getManager(item.manuscriptRoot);
     const name = await promptName(kind[0].toUpperCase() + kind.slice(1));
     if (!name) return;
     await m.createNode(kind, name.trim(), {});
   };
   context.subscriptions.push(
-    vscode.commands.registerCommand("flowManuscript.addCharacter", () =>
-      addEntity("character")
+    vscode.commands.registerCommand(
+      "flowManuscript.addCharacter",
+      (item?: FlowTreeItem) => addEntity("character", item)
     ),
-    vscode.commands.registerCommand("flowManuscript.addPlace", () =>
-      addEntity("place")
+    vscode.commands.registerCommand(
+      "flowManuscript.addPlace",
+      (item?: FlowTreeItem) => addEntity("place", item)
     )
   );
 
@@ -164,9 +224,9 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "flowManuscript.deleteNode",
-      async (item?: { nodeId?: string; nodeKind?: string }) => {
-        const m = await ensureManager();
-        if (!m || !item?.nodeId) return;
+      async (item?: FlowTreeItem) => {
+        if (!item?.manuscriptRoot || !item?.nodeId) return;
+        const m = await getManager(item.manuscriptRoot);
         const node = m.getNode(item.nodeId);
         if (!node) return;
         const label =
@@ -195,9 +255,9 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "flowManuscript.moveSceneToAct",
-      async (item?: { nodeId?: string; nodeKind?: string }) => {
-        const m = await ensureManager();
-        if (!m || !item?.nodeId) return;
+      async (item?: FlowTreeItem) => {
+        if (!item?.manuscriptRoot || !item?.nodeId) return;
+        const m = await getManager(item.manuscriptRoot);
         const node = m.getNode(item.nodeId);
         if (!node || node.kind !== "scene") return;
         const current = m.actOfScene(item.nodeId);
@@ -231,26 +291,29 @@ export async function activate(context: vscode.ExtensionContext) {
 
   /** The Scenes group '+' creates an act. */
   context.subscriptions.push(
-    vscode.commands.registerCommand("flowManuscript.addAct", async () => {
-      const m = await ensureManager();
-      if (!m) return;
-      const name = await vscode.window.showInputBox({
-        prompt: "Act name",
-        placeHolder: "e.g. Setup, Confrontation, Resolution",
-        validateInput: (v) => (v.trim() ? undefined : "Name is required"),
-      });
-      if (!name) return;
-      await m.createAct(name.trim());
-    })
+    vscode.commands.registerCommand(
+      "flowManuscript.addAct",
+      async (item?: FlowTreeItem) => {
+        if (!item?.manuscriptRoot) return;
+        const m = await getManager(item.manuscriptRoot);
+        const name = await vscode.window.showInputBox({
+          prompt: "Act name",
+          placeHolder: "e.g. Setup, Confrontation, Resolution",
+          validateInput: (v) => (v.trim() ? undefined : "Name is required"),
+        });
+        if (!name) return;
+        await m.createAct(name.trim());
+      }
+    )
   );
 
   /** Hovering an act shows '+' to add a scene into it. */
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "flowManuscript.addSceneToAct",
-      async (item?: { actId?: string }) => {
-        const m = await ensureManager();
-        if (!m || !item?.actId) return;
+      async (item?: FlowTreeItem) => {
+        if (!item?.manuscriptRoot || !item?.actId) return;
+        const m = await getManager(item.manuscriptRoot);
         const name = await promptName("Scene");
         if (!name) return;
         const pov = await vscode.window.showInputBox({
@@ -276,9 +339,9 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.commands.registerCommand(
       "flowManuscript.renameAct",
-      async (item?: { actId?: string }) => {
-        const m = await ensureManager();
-        if (!m || !item?.actId) return;
+      async (item?: FlowTreeItem) => {
+        if (!item?.manuscriptRoot || !item?.actId) return;
+        const m = await getManager(item.manuscriptRoot);
         const act = m.getAct(item.actId);
         if (!act) return;
         const name = await vscode.window.showInputBox({
@@ -291,23 +354,25 @@ export async function activate(context: vscode.ExtensionContext) {
     ),
     vscode.commands.registerCommand(
       "flowManuscript.moveActUp",
-      async (item?: { actId?: string }) => {
-        const m = await ensureManager();
-        if (m && item?.actId) await m.moveAct(item.actId, "up");
+      async (item?: FlowTreeItem) => {
+        if (!item?.manuscriptRoot || !item?.actId) return;
+        const m = await getManager(item.manuscriptRoot);
+        await m.moveAct(item.actId, "up");
       }
     ),
     vscode.commands.registerCommand(
       "flowManuscript.moveActDown",
-      async (item?: { actId?: string }) => {
-        const m = await ensureManager();
-        if (m && item?.actId) await m.moveAct(item.actId, "down");
+      async (item?: FlowTreeItem) => {
+        if (!item?.manuscriptRoot || !item?.actId) return;
+        const m = await getManager(item.manuscriptRoot);
+        await m.moveAct(item.actId, "down");
       }
     ),
     vscode.commands.registerCommand(
       "flowManuscript.deleteAct",
-      async (item?: { actId?: string }) => {
-        const m = await ensureManager();
-        if (!m || !item?.actId) return;
+      async (item?: FlowTreeItem) => {
+        if (!item?.manuscriptRoot || !item?.actId) return;
+        const m = await getManager(item.manuscriptRoot);
         const act = m.getAct(item.actId);
         if (!act) return;
         const count = act.sceneIds.length;
@@ -326,33 +391,10 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     )
   );
-
-  // Auto-init the tree if the open folder looks like a manuscript. We treat a
-  // folder as a manuscript if it has an outline.flow.json OR an overview.md
-  // (the latter covers skill-created books not yet imported; load() will seed
-  // an empty flow file so the tree still renders).
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  if (folder) {
-    const has = async (name: string) => {
-      try {
-        await vscode.workspace.fs.stat(
-          vscode.Uri.joinPath(folder.uri, name)
-        );
-        return true;
-      } catch {
-        return false;
-      }
-    };
-    if ((await has("outline.flow.json")) || (await has("overview.md"))) {
-      await ensureManager();
-    }
-    // Otherwise: not a manuscript workspace; the tree shows its hint row and
-    // commands will lazily init when invoked.
-  }
 }
 
 export function deactivate() {
-  manager = undefined;
+  managers.clear();
   tree = undefined;
 }
 

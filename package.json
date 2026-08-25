@@ -2,7 +2,7 @@
   "name": "flow-manuscript",
   "displayName": "Flow Manuscript",
   "description": "Plan and write novels as a scene flow diagram with a rich Markdown editor.",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "publisher": "local",
   "license": "MIT",
   "repository": {
@@ -16,7 +16,7 @@
   "main": "./dist-extension/extension/extension.js",
   "activationEvents": [
     "onView:flowManuscript.tree",
-    "workspaceContains:outline.flow.json"
+    "workspaceContains:**/outline.flow.json"
   ],
   "contributes": {
     "commands": [
@@ -102,14 +102,12 @@
       ]
     },
     "menus": {
-      "view/title": [
+      "view/item/context": [
         {
           "command": "flowManuscript.openDiagram",
-          "when": "view == flowManuscript.tree",
-          "group": "navigation"
-        }
-      ],
-      "view/item/context": [
+          "when": "view == flowManuscript.tree && viewItem == manuscript",
+          "group": "inline"
+        },
         {
           "command": "flowManuscript.addAct",
           "when": "view == flowManuscript.tree && viewItem == group:scene",

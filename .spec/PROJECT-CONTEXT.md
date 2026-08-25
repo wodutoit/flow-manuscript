@@ -24,12 +24,50 @@ the older `new-manuscript` authoring skill:
 ```
 
 Three surfaces:
-- **Tree (hierarchy)**: Overview row + Scenes / Characters / Places groups.
-  Scenes are grouped under **Acts**.
+- **Tree (hierarchy)**: root level lists every **manuscript** found in the
+  workspace (folder name = label); expanding one shows its Overview row +
+  Scenes / Characters / Places groups. Scenes are grouped under **Acts**.
 - **Diagram** (React Flow webview): scene/character/place nodes; solid "order"
   edges define story sequence, dashed "logical" edges mark POV/links.
 - **Editor** (TipTap webview): per-kind frontmatter fields + WYSIWYG Markdown
   body + section-insert buttons + spellcheck.
+
+### Multi-manuscript support (this session)
+The extension is no longer pinned to a single "workspace root = the
+manuscript" assumption. A folder is a **manuscript root** iff it directly
+contains `outline.flow.json`. `extension.ts`'s `discoverManuscriptRoots()`
+checks each open workspace folder itself, plus its immediate (one-level)
+subfolders — so opening a `books/` repo with `books/<book>/outline.flow.json`
+per book, or opening a single book's folder directly (the old behavior),
+both work unchanged. The tree's root level lists one row per discovered
+manuscript (folder basename as label); clicking the row (or its inline
+"open diagram" icon) opens that manuscript's diagram — the disclosure arrow
+still expands the row to Overview/Scenes/Characters/Places underneath.
+
+There is no more single module-level `manager` — `extension.ts` keeps a
+`Map<string, ManuscriptManager>` keyed by the manuscript root's
+`Uri.toString()` (`getManager(rootKey)`, created + `load()`ed lazily on
+first use, then cached/shared by the tree, diagram panels, and editor
+panels). `DiagramPanel` and `EditorPanel` are keyed the same way so **you
+can have diagrams for two different books open in separate panel tabs at
+once** (`DiagramPanel` keys by root; `EditorPanel` keys by
+`${root}::${nodeId}` — the root has to be part of the key because
+`OVERVIEW_ID` is the same sentinel value in every book, so without it,
+opening "Overview" in book B would just reveal book A's already-open
+Overview panel). Editor tab titles are suffixed `— <book folder name>` so
+same-named rows (e.g. two "Overview" tabs) stay distinguishable.
+
+Every tree row (`FlowTreeItem` in `treeProvider.ts`) carries a
+`manuscriptRoot` string field alongside the existing `nodeId`/`actId`/etc.,
+and command handlers in `extension.ts` (`addCharacter`, `addAct`,
+`deleteNode`, `openNode`, ...) all take the clicked tree item and read
+`item.manuscriptRoot` to resolve the right `ManuscriptManager` — there's no
+"current manuscript" global any more. `package.json`'s
+`activationEvents` uses the glob `workspaceContains:**/outline.flow.json`
+(was the bare filename) so the extension activates when the *books* folder
+is opened, not just a single book folder. The old always-visible
+`view/title` "Open Diagram" toolbar button was removed (it had no manuscript
+to target) in favor of the inline icon on each manuscript row.
 
 ---
 
@@ -190,6 +228,12 @@ manuscripts trivial (see Decisions).
 - Tree provider always registers a data provider (even with no manuscript — shows
   a hint row) to avoid "no data provider registered". Extension activates and
   registers the provider first thing in `activate`.
+- **Multi-manuscript tree + panels:** root of the tree lists every folder in
+  the workspace (or its immediate subfolders) containing `outline.flow.json`;
+  click a manuscript row (or its inline diagram icon) to open its diagram.
+  Diagram and editor panels are keyed per manuscript, so multiple books' work
+  can be open side by side. See "Multi-manuscript support" above for the
+  mechanics.
 
 ### DEFERRED — next major piece: ACTS ON THE DIAGRAM CANVAS
 All host methods + message types already exist and are wired in `diagramPanel`:
@@ -219,6 +263,27 @@ global `rootCount` (which was removed from `DiagramState`).
   CLAUDE.md template still references it — harmless.
 - A duplicated scene joins the same act as its source (keeps the "every scene in
   an act" invariant).
+- **Fixed (this session, two attempts): editor panels cascading new columns.**
+  `EditorPanel` originally passed `ViewColumn.Beside` to `createWebviewPanel`
+  on every open; VS Code's `Beside` opens a *new* group beside whatever's
+  active each time, so clicking through several scenes cascaded a new column
+  per click instead of adding tabs.
+  - First attempt: cache the column the first editor resolves to
+    (`panel.viewColumn` after creation) and reuse that for later opens. This
+    did NOT work — `viewColumn` isn't reliably populated synchronously right
+    after `createWebviewPanel` returns, so the cached value stayed
+    `undefined` and every open kept falling back to `Beside`.
+  - Working fix: use a **fixed column constant** (`EDITOR_COLUMN =
+    ViewColumn.Two` in `editorPanel.ts`) for every editor open, instead of
+    `Beside` at all. Deterministic, no dependency on reading anything back
+    from the panel. `DiagramPanel` already did the equivalent thing
+    (`ViewColumn.One`, fixed) and was never affected by this bug.
+  - If this resurfaces: check whether `vscode.window.tabGroups` shows editors
+    landing in a column other than Two, which would mean something upstream
+    (e.g. a `"workbench.editor.openSideBySideDirection"` user setting, or
+    VS Code changing how a fixed `ViewColumn` resolves when that column
+    doesn't already exist) is overriding the explicit column — that's a
+    different failure mode than the `Beside` cascade this fixed.
 
 ---
 
@@ -237,6 +302,17 @@ global `rootCount` (which was removed from `DiagramState`).
 - **Adding a scene with no act is blocked** (guides user to create an act).
 - **nspell over hunspell-asm** for spellcheck (bundling reliability).
 - **esbuild-bundled host** so the `.vsix` has no node_modules runtime dependency.
+- **Manuscript discovery = workspace folder + its immediate subfolders only**
+  (not fully recursive): matches the author's actual layout (a `books/`
+  repo with one flat subfolder per book) without the cost/ambiguity of
+  scanning arbitrarily deep. Detection rule is strictly "does this folder
+  directly contain `outline.flow.json`" — deliberately *not* also
+  `overview.md`, so a skill-created-but-not-yet-imported folder doesn't show
+  up as a half-working manuscript row; run Import first.
+- **Multiple diagram panels allowed, one per manuscript** (not a single
+  shared panel): the author wants to compare/reference two books' flows
+  side by side. Editor panels follow the same per-manuscript keying for
+  consistency (and because `OVERVIEW_ID` collides across books otherwise).
 
 ---
 
@@ -251,3 +327,11 @@ global `rootCount` (which was removed from `DiagramState`).
 6. Acts: create a 2nd act, add a scene — global numbering continues across acts,
    per-act numbering restarts; tree shows both.
 7. Delete: act (warns re: scenes+files) and individual nodes (warns re: file).
+8. Multi-manuscript: open a folder containing 2+ book subfolders (each with
+   its own `outline.flow.json`) — tree root should list one row per book by
+   folder name. Open both books' diagrams — expect two separate panel tabs,
+   each still live (editing one doesn't affect the other). Open "Overview"
+   for both — expect two editor tabs titled `Overview — <book>` (distinct
+   books, not one tab reused). Still also test opening a single book's
+   folder directly (old single-manuscript workflow) — its own folder should
+   appear as the one tree row.

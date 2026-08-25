@@ -1,25 +1,30 @@
 import * as vscode from "vscode";
+import * as path from "path";
 import { ManuscriptManager } from "./manuscriptManager";
 import { webviewHtml } from "./webviewHtml";
 import type { DiagramToHost, HostToDiagram, NodeKind } from "../shared/types";
 
+/** One diagram panel per manuscript root; multiple can be open at once. */
 export class DiagramPanel {
-  static current: DiagramPanel | undefined;
+  private static panels = new Map<string, DiagramPanel>();
   private readonly panel: vscode.WebviewPanel;
   private disposables: vscode.Disposable[] = [];
 
   static show(
     extensionUri: vscode.Uri,
     manager: ManuscriptManager,
+    rootKey: string,
     openEditor: (nodeId: string) => void
   ) {
-    if (DiagramPanel.current) {
-      DiagramPanel.current.panel.reveal();
+    const existing = DiagramPanel.panels.get(rootKey);
+    if (existing) {
+      existing.panel.reveal();
       return;
     }
+    const title = `Flow: ${path.basename(manager.rootUri.fsPath)}`;
     const panel = vscode.window.createWebviewPanel(
       "flowManuscript.diagram",
-      "Manuscript Flow",
+      title,
       vscode.ViewColumn.One,
       {
         enableScripts: true,
@@ -29,11 +34,9 @@ export class DiagramPanel {
         ],
       }
     );
-    DiagramPanel.current = new DiagramPanel(
-      panel,
-      extensionUri,
-      manager,
-      openEditor
+    DiagramPanel.panels.set(
+      rootKey,
+      new DiagramPanel(panel, extensionUri, manager, rootKey, openEditor)
     );
   }
 
@@ -41,6 +44,7 @@ export class DiagramPanel {
     panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
     private readonly manager: ManuscriptManager,
+    private readonly rootKey: string,
     private readonly openEditor: (nodeId: string) => void
   ) {
     this.panel = panel;
@@ -238,7 +242,7 @@ export class DiagramPanel {
   }
 
   dispose() {
-    DiagramPanel.current = undefined;
+    DiagramPanel.panels.delete(this.rootKey);
     this.panel.dispose();
     while (this.disposables.length) this.disposables.pop()?.dispose();
   }

@@ -1,9 +1,30 @@
 import * as vscode from "vscode";
+import * as path from "path";
 import { ManuscriptManager } from "./manuscriptManager";
 import { webviewHtml } from "./webviewHtml";
 import { OVERVIEW_ID, type EditorToHost, type HostToEditor } from "../shared/types";
 
-/** One editor panel per node id; reused if already open. */
+/**
+ * One editor panel per (manuscript root, node id); reused if already open.
+ * Keying on the manuscript root too (not just node id) matters because
+ * OVERVIEW_ID is the same sentinel across every manuscript — without the
+ * root in the key, opening "Overview" for a second book would just reveal
+ * the first book's already-open Overview panel.
+ *
+ * All editors share one fixed column (`EDITOR_COLUMN`, below) so they stack
+ * as tabs there instead of cascading a new column per click. An earlier
+ * version used `ViewColumn.Beside` and tried to remember whatever column
+ * that resolved to (via `panel.viewColumn`) for reuse — that didn't work
+ * reliably because `viewColumn` isn't guaranteed to be populated immediately
+ * after `createWebviewPanel` returns, so the cached value stayed `undefined`
+ * and every open kept re-triggering `Beside` (a fresh column each time). A
+ * fixed column sidesteps that: it's deterministic and doesn't depend on
+ * reading anything back from the panel.
+ */
+// Every node/character/place/overview editor opens into this fixed column,
+// beside DiagramPanel's fixed ViewColumn.One — see the class doc comment.
+const EDITOR_COLUMN = vscode.ViewColumn.Two;
+
 export class EditorPanel {
   private static panels = new Map<string, EditorPanel>();
   private readonly panel: vscode.WebviewPanel;
@@ -12,28 +33,31 @@ export class EditorPanel {
   static show(
     extensionUri: vscode.Uri,
     manager: ManuscriptManager,
+    rootKey: string,
     nodeId: string
   ) {
-    const existing = EditorPanel.panels.get(nodeId);
+    const key = `${rootKey}::${nodeId}`;
+    const existing = EditorPanel.panels.get(key);
     if (existing) {
-      existing.panel.reveal(vscode.ViewColumn.Beside);
+      existing.panel.reveal(EDITOR_COLUMN);
       return;
     }
+    const bookName = path.basename(manager.rootUri.fsPath);
     let title: string;
     if (nodeId === OVERVIEW_ID) {
-      title = "Overview";
+      title = `Overview — ${bookName}`;
     } else {
       const node = manager.getNode(nodeId);
       if (!node) {
         vscode.window.showErrorMessage("That node no longer exists.");
         return;
       }
-      title = node.name;
+      title = `${node.name} — ${bookName}`;
     }
     const panel = vscode.window.createWebviewPanel(
       "flowManuscript.editor",
       title,
-      vscode.ViewColumn.Beside,
+      EDITOR_COLUMN,
       {
         enableScripts: true,
         retainContextWhenHidden: true,
@@ -43,8 +67,8 @@ export class EditorPanel {
       }
     );
     EditorPanel.panels.set(
-      nodeId,
-      new EditorPanel(panel, extensionUri, manager, nodeId)
+      key,
+      new EditorPanel(panel, extensionUri, manager, key, nodeId, bookName)
     );
   }
 
@@ -52,7 +76,9 @@ export class EditorPanel {
     panel: vscode.WebviewPanel,
     extensionUri: vscode.Uri,
     private readonly manager: ManuscriptManager,
-    private readonly nodeId: string
+    private readonly key: string,
+    private readonly nodeId: string,
+    private readonly bookName: string
   ) {
     this.panel = panel;
     panel.webview.html = webviewHtml(
@@ -76,7 +102,7 @@ export class EditorPanel {
   private async sendDoc() {
     if (this.nodeId === OVERVIEW_ID) {
       const { frontmatter, body } = await this.manager.readOverview();
-      this.panel.title = "Overview";
+      this.panel.title = `Overview — ${this.bookName}`;
       this.post({
         type: "doc",
         nodeId: OVERVIEW_ID,
@@ -89,7 +115,7 @@ export class EditorPanel {
     const node = this.manager.getNode(this.nodeId);
     if (!node) return;
     const { frontmatter, body } = await this.manager.readDoc(node);
-    this.panel.title = node.name;
+    this.panel.title = `${node.name} — ${this.bookName}`;
     // For scenes, include act context so the editor can show/change the act.
     let actId: string | undefined;
     let acts:
@@ -149,7 +175,7 @@ export class EditorPanel {
           await this.manager.saveFrontmatter(m.nodeId, m.frontmatter);
           // Title may have changed.
           const node = this.manager.getNode(m.nodeId);
-          if (node) this.panel.title = node.name;
+          if (node) this.panel.title = `${node.name} — ${this.bookName}`;
         }
         break;
       case "renameNode":
@@ -164,7 +190,7 @@ export class EditorPanel {
   }
 
   dispose() {
-    EditorPanel.panels.delete(this.nodeId);
+    EditorPanel.panels.delete(this.key);
     this.panel.dispose();
     while (this.disposables.length) this.disposables.pop()?.dispose();
   }
