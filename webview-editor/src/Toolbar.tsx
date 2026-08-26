@@ -1,11 +1,17 @@
 import type { Editor } from "@tiptap/react";
 import { SECTIONS, type SectionDef } from "./bridge";
-import type { EditorKind } from "../../src/shared/types";
+import type { AiStatus, EditorKind } from "../../src/shared/types";
 
 interface Props {
   editor: Editor;
   kind: EditorKind;
   onInsertSection: (s: SectionDef) => void;
+  aiStatus: AiStatus;
+  aiBusy: boolean;
+  hasAiEditorNotes: boolean;
+  onAiGrammar: () => void;
+  onAiEditor: () => void;
+  onShowAiEditorNotes: () => void;
 }
 
 function Btn({
@@ -35,7 +41,17 @@ function Btn({
   );
 }
 
-export function Toolbar({ editor, kind, onInsertSection }: Props) {
+export function Toolbar({
+  editor,
+  kind,
+  onInsertSection,
+  aiStatus,
+  aiBusy,
+  hasAiEditorNotes,
+  onAiGrammar,
+  onAiEditor,
+  onShowAiEditorNotes,
+}: Props) {
   const heading = (level: 1 | 2 | 3 | 4 | 5 | 6) => (
     <Btn
       key={level}
@@ -134,6 +150,38 @@ export function Toolbar({ editor, kind, onInsertSection }: Props) {
         >
           ↻
         </Btn>
+      </div>
+
+      <div className="tb__group tb__group--ai">
+        <Btn
+          disabled={aiStatus !== "ready" || aiBusy}
+          onClick={onAiGrammar}
+          title="AI Grammar — review the current paragraph for grammar, clarity, tone, and wordiness"
+        >
+          AI Grammar
+        </Btn>
+        <Btn
+          disabled={aiStatus !== "ready" || aiBusy}
+          onClick={onAiEditor}
+          title="AI Editor — developmental notes on the current paragraph (pacing, showing vs. telling, sensory detail, tension, POV)"
+        >
+          AI Editor
+        </Btn>
+        <Btn
+          disabled={!hasAiEditorNotes}
+          onClick={onShowAiEditorNotes}
+          title="Reopen AI Editor notes"
+        >
+          ▤
+        </Btn>
+        {aiBusy ? (
+          <span
+            className="tb__spinner"
+            role="status"
+            aria-label="AI review in progress"
+            title="AI review in progress…"
+          />
+        ) : null}
       </div>
 
       <div className="tb__group tb__group--sections">

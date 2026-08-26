@@ -4,6 +4,7 @@ import { ManuscriptTreeProvider, FlowTreeItem } from "./treeProvider";
 import { DiagramPanel } from "./diagramPanel";
 import { EditorPanel } from "./editorPanel";
 import { toSlug } from "./frontmatter";
+import { AiAssist } from "./aiAssist";
 import type { ManuscriptMeta } from "../shared/types";
 
 const FLOW_FILE = "outline.flow.json";
@@ -72,17 +73,40 @@ export async function activate(context: vscode.ExtensionContext) {
     return roots;
   };
 
+  // Single process-wide AI assist singleton (not per-manuscript) — see
+  // aiAssist.ts's class doc comment and the plan (tender-rolling-ullman.md).
+  // Takes the extension context so it can target context.globalStorageUri
+  // for the one-time model download.
+  const aiAssist = new AiAssist(context);
+  context.subscriptions.push(aiAssist);
+  context.subscriptions.push(
+    vscode.commands.registerCommand("flowManuscript.showAiOutput", () =>
+      aiAssist.showOutput()
+    )
+  );
+
   // Register the tree view provider immediately and unconditionally, so the
   // view always has a data provider (otherwise VS Code shows "no data
   // provider registered"). It discovers manuscripts lazily on first render.
+  // Uses createTreeView (not the plain registerTreeDataProvider) specifically
+  // to get onDidChangeVisibility — that's the actual trigger for loading the
+  // AI model: only when the Flow Manuscript tree becomes visible, not merely
+  // on activate() and not merely because the ai.enabled setting is on (see
+  // AiAssist.ensureReady(), which itself no-ops unless the setting is on).
   tree = new ManuscriptTreeProvider(getManager, discoverManuscriptRoots);
+  const treeView = vscode.window.createTreeView("flowManuscript.tree", {
+    treeDataProvider: tree,
+  });
   context.subscriptions.push(
-    vscode.window.registerTreeDataProvider("flowManuscript.tree", tree)
+    treeView,
+    treeView.onDidChangeVisibility((e) => {
+      if (e.visible) aiAssist.ensureReady();
+    })
   );
 
   const openNode = async (rootKey: string, nodeId: string) => {
     const m = await getManager(rootKey);
-    EditorPanel.show(ext, m, rootKey, nodeId);
+    EditorPanel.show(ext, m, rootKey, nodeId, aiAssist);
   };
 
   // --- command: create a new manuscript ------------------------------------
@@ -178,6 +202,39 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         const m = await getManager(rootKey);
         DiagramPanel.show(ext, m, rootKey, (nodeId) => openNode(rootKey, nodeId));
+      }
+    )
+  );
+
+  // --- command: create/open a manuscript's voiceprint file -----------------
+  // The per-manuscript .claude/voiceprint.md that manuscriptManager.ts's
+  // loadVoiceprint() reads (see resolveVoiceprint() in editorPanel.ts). This
+  // is the only way to create that file from the UI — seeds it with a short
+  // explanatory template on first use, then just opens it on every use after.
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "flowManuscript.editVoiceprint",
+      async (item?: FlowTreeItem) => {
+        if (!item?.manuscriptRoot) return;
+        const m = await getManager(item.manuscriptRoot);
+        const claudeDir = vscode.Uri.joinPath(m.rootUri, ".claude");
+        const uri = vscode.Uri.joinPath(claudeDir, "voiceprint.md");
+        try {
+          await vscode.workspace.fs.stat(uri);
+        } catch {
+          await vscode.workspace.fs.createDirectory(claudeDir);
+          const seed =
+            "# Voiceprint\n\n" +
+            "Describe your voice and style preferences here — tone, sentence " +
+            "rhythm, words or phrasing you want to avoid, anything AI Grammar " +
+            "and AI Editor should weigh their suggestions against.\n\n" +
+            "This file is optional. If you delete it, Flow Manuscript falls " +
+            "back to the global `flowManuscript.ai.voiceprintPath` setting, " +
+            "if any.\n";
+          await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(seed));
+        }
+        const doc = await vscode.workspace.openTextDocument(uri);
+        await vscode.window.showTextDocument(doc, { preview: false });
       }
     )
   );

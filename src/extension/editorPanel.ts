@@ -3,6 +3,15 @@ import * as path from "path";
 import { ManuscriptManager } from "./manuscriptManager";
 import { webviewHtml } from "./webviewHtml";
 import { OVERVIEW_ID, type EditorToHost, type HostToEditor } from "../shared/types";
+import type { AiAssist } from "./aiAssist";
+
+const dec = new TextDecoder();
+
+/** Cap on the resolved voiceprint text (whichever source it came from)
+ * before it ever reaches AiAssist — protects the small model's limited
+ * context window from an oversized style-guide file crowding out the
+ * actual paragraph being reviewed. */
+const VOICEPRINT_MAX_CHARS = 2000;
 
 /**
  * One editor panel per (manuscript root, node id); reused if already open.
@@ -34,7 +43,8 @@ export class EditorPanel {
     extensionUri: vscode.Uri,
     manager: ManuscriptManager,
     rootKey: string,
-    nodeId: string
+    nodeId: string,
+    aiAssist: AiAssist
   ) {
     const key = `${rootKey}::${nodeId}`;
     const existing = EditorPanel.panels.get(key);
@@ -68,9 +78,11 @@ export class EditorPanel {
     );
     EditorPanel.panels.set(
       key,
-      new EditorPanel(panel, extensionUri, manager, key, nodeId, bookName)
+      new EditorPanel(panel, extensionUri, manager, key, nodeId, bookName, aiAssist)
     );
   }
+
+  private disposed = false;
 
   private constructor(
     panel: vscode.WebviewPanel,
@@ -78,7 +90,8 @@ export class EditorPanel {
     private readonly manager: ManuscriptManager,
     private readonly key: string,
     private readonly nodeId: string,
-    private readonly bookName: string
+    private readonly bookName: string,
+    private readonly aiAssist: AiAssist
   ) {
     this.panel = panel;
     panel.webview.html = webviewHtml(
@@ -93,6 +106,12 @@ export class EditorPanel {
       this.disposables
     );
     panel.onDidDispose(() => this.dispose(), null, this.disposables);
+    this.disposables.push(
+      aiAssist.onDidChangeStatus(() => {
+        if (this.disposed) return;
+        this.post({ type: "aiStatus", status: aiAssist.status });
+      })
+    );
   }
 
   private post(msg: HostToEditor) {
@@ -138,6 +157,41 @@ export class EditorPanel {
     });
   }
 
+  /**
+   * Resolves the effective voiceprint for this manuscript: its own
+   * `.claude/voiceprint.md` if present, else the global
+   * `flowManuscript.ai.voiceprintPath` setting's file, else `undefined`.
+   * Truncated to `VOICEPRINT_MAX_CHARS` regardless of source before it's
+   * ever passed to AiAssist.
+   */
+  private async resolveVoiceprint(): Promise<string | undefined> {
+    let text = await this.manager.loadVoiceprint();
+    if (!text) {
+      const configuredPath = vscode.workspace
+        .getConfiguration("flowManuscript")
+        .get<string>("ai.voiceprintPath", "")
+        .trim();
+      if (configuredPath) {
+        try {
+          const raw = await vscode.workspace.fs.readFile(
+            vscode.Uri.file(configuredPath)
+          );
+          const trimmed = dec.decode(raw).trim();
+          text = trimmed || undefined;
+        } catch (err) {
+          console.error(
+            "flow-manuscript: failed to read global voiceprint file",
+            err
+          );
+        }
+      }
+    }
+    if (!text) return undefined;
+    return text.length > VOICEPRINT_MAX_CHARS
+      ? text.slice(0, VOICEPRINT_MAX_CHARS)
+      : text;
+  }
+
   private async sendDictionary() {
     try {
       const { language, aff, dic, customWords } =
@@ -152,6 +206,9 @@ export class EditorPanel {
   private async onMessage(m: EditorToHost) {
     switch (m.type) {
       case "ready":
+        this.post({ type: "aiStatus", status: this.aiAssist.status });
+        await this.sendDoc();
+        break;
       case "requestDoc":
         await this.sendDoc();
         break;
@@ -161,6 +218,23 @@ export class EditorPanel {
       case "addCustomWord":
         await this.manager.addCustomWord(m.word);
         break;
+      case "requestAiReview": {
+        const voiceprint = await this.resolveVoiceprint();
+        if (this.disposed) break;
+        if (m.mode === "grammar") {
+          const suggestions = await this.aiAssist.checkGrammar(
+            m.text,
+            voiceprint
+          );
+          if (this.disposed) break;
+          this.post({ type: "aiGrammarSuggestions", suggestions });
+        } else {
+          const notes = await this.aiAssist.reviewAsEditor(m.text, voiceprint);
+          if (this.disposed) break;
+          this.post({ type: "aiEditorNotes", notes });
+        }
+        break;
+      }
       case "saveBody":
         if (m.nodeId === OVERVIEW_ID) {
           await this.manager.saveOverviewBody(m.body);
@@ -190,6 +264,7 @@ export class EditorPanel {
   }
 
   dispose() {
+    this.disposed = true;
     EditorPanel.panels.delete(this.key);
     this.panel.dispose();
     while (this.disposables.length) this.disposables.pop()?.dispose();
