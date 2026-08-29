@@ -26,6 +26,53 @@ Scene `.md` files are named from the scene name (kebab-case). The **scene number
 
 > Note: this drops the skill's `NNN-` filename prefix in favour of graph-driven ordering. On-disk files no longer sort in story order; the manifest and frontmatter carry order instead. The `scene:` number is still written to frontmatter so `compile-manuscript` keeps working.
 
+## Series of books
+
+A folder whose `outline.flow.json` contains a **`books`** array (instead of the
+`acts`/`nodes`/`edges` of a manuscript) is a **series**. Each entry names an
+immediate subfolder that is an ordinary manuscript:
+
+```
+society-series/
+  outline.flow.json        <- books[] + order edges between them
+  society-1-unbound-union/     outline.flow.json, scenes/, characters/, ...
+  society-2-leading-chaos/     outline.flow.json, ...
+```
+
+```json
+{
+  "version": 2,
+  "books": [
+    { "id": "b1", "name": "society-1-unbound-union", "order": 1,
+      "position": { "x": 40, "y": 80 }, "size": { "width": 260, "height": 132 } }
+  ],
+  "edges": [{ "id": "e1", "kind": "order", "source": "b1", "target": "b2" }]
+}
+```
+
+`name` is the folder name; the optional `title` is what the UI shows when set.
+Missing `id`, `order`, `position` and `size` are filled in on load, so a
+hand-written file only really needs `name` per book.
+
+- **Tree** — the series is one top-level row (library icon). Expanding it lists
+  its books in reading order; expanding a book gives the usual Overview /
+  Scenes / Characters / Places. Books in a series are not also listed at the top
+  level, so a book appears exactly once.
+- **Series diagram** — click the series row (or its diagram icon) for a canvas
+  of book nodes joined by order arrows. Drag to arrange, connect two books to
+  set reading order, select an arrow to delete it. Every book-level control
+  (acts, scenes, characters, places, duplicate, edge kinds) is absent here —
+  none of it means anything at the series level.
+- **Open a book's diagram** — each book node has a ⎇ icon; clicking it (or
+  double-clicking the node) opens that book's own diagram in the editor column
+  **beside** the series canvas, so both stay visible.
+- **Add a book** — the `+` on the series row, or **+ Book** on the series
+  canvas. It runs the same prompts as New Manuscript, scaffolds the full
+  manuscript inside the series folder, and appends it to the end of the chain.
+
+Like an act, a series should have exactly one starting book: if two books both
+lack an incoming arrow, they render red.
+
 ## Requirements
 
 - Node.js 18+ and npm
@@ -42,7 +89,7 @@ npm run build      # builds extension host + both webview bundles
 npm install
 npm run build
 npm run package
-code --install-extension flow-manuscript-0.2.0.vsix --force
+code --install-extension flow-manuscript-0.2.1.vsix --force
 ```
 
 This produces:

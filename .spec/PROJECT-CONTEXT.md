@@ -335,3 +335,89 @@ global `rootCount` (which was removed from `DiagramState`).
    books, not one tab reused). Still also test opening a single book's
    folder directly (old single-manuscript workflow) — its own folder should
    appear as the one tree row.
+
+---
+
+## Series of books (added 2026-08-29)
+
+### What a series is
+A folder whose `outline.flow.json` has a top-level **`books` array** instead of
+`acts`/`nodes`/`edges`. That key is the *only* discriminator —
+`SeriesManager.isSeriesRoot()` parses the file and checks
+`Array.isArray(parsed.books)`. There is no `kind: "series"` marker and no new
+filename; a series and a manuscript both live in `outline.flow.json`.
+
+Each `books[].name` is an **immediate subfolder** that is itself an ordinary
+manuscript root. Books know nothing about their series — no back-reference is
+written into a book's own flow file or frontmatter — so a book can be opened
+standalone, moved out, or added to a series purely by editing the series file.
+
+```
+<series-root>/
+  outline.flow.json          books[] + "order" edges between book ids
+  <book-folder>/             a normal manuscript root
+```
+
+`SeriesManager.normalize()` fills in anything a hand-written file omits (`id`,
+`order`, `position`, `size`) and drops edges whose endpoints don't exist. It
+does **not** write back on load — `persist()` only runs on a real user change,
+so merely opening a series never dirties the file.
+
+### Ordering rule
+Same single-start rule as an act, one level up: books are chained by `"order"`
+edges, the one book with no incoming edge is Book 1, and a series with anything
+other than exactly one root renders its root books red. `orderedBookIds()` in
+`graph.ts` walks the chain and appends unreachable books by stored `order`, so
+a half-connected series still renders. `connectBooks()` enforces one outgoing
+and one incoming order edge per book (replacing any existing one) and refuses a
+link that would close a cycle. Stored `order` is rewritten from the chain after
+every edge change, purely so the JSON stays readable.
+
+### Discovery and the tree
+`extension.ts`'s `discoverRoots()` replaced `discoverManuscriptRoots()`. It
+walks the same places (each workspace folder + its immediate subfolders) but
+now classifies each hit as `{ kind: "manuscript" | "series", uri }`, then
+**drops any manuscript that is a book of a discovered series** — otherwise
+opening a series folder directly would list every book twice (once at top
+level, once nested). `SeriesManager`s are cached in a `seriesManagers` map
+alongside `managers`, same lazy `load()`-on-first-use pattern.
+
+Tree shape: series row (`itemKind: "series"`, `library` icon, contextValue
+`series`) -> one book row per book in reading order -> the book's ordinary
+Overview / Scenes / Characters / Places. A book row IS a manuscript row — same
+`manuscriptRow()` builder, same contextValue, so it keeps its inline diagram
+and voiceprint actions — it just carries `seriesRoot` too and is labelled
+`N. <title or name>`. A book whose folder is missing shows as a warning row
+rather than disappearing, so a stale series file is visible and fixable.
+
+### The series canvas
+`SeriesPanel` **reuses the diagram webview bundle** rather than shipping a
+third one. The webview picks its mode from the first message it receives:
+`"seriesState"` -> series, `"state"` -> manuscript; until one arrives it
+renders no toolbar at all, so no book-level control ever flashes on a series
+canvas. The two toolbars are separate JSX branches — book-level actions are
+*absent by construction* on a series, not hidden with CSS. `SeriesPanel`
+handles only the series subset of `DiagramToHost` (`addBook`,
+`openBookDiagram`, `moveBook`, `resizeBook`, `connectBooks`,
+`deleteBookEdge`) and ignores the rest.
+
+Layout: stored positions win, but `{0,0}` — or a position that duplicates one
+already taken, which is what a hand-written series file tends to have — falls
+back to the next slot in a row, so books never stack. Dragging persists back to
+the series file.
+
+Opening a book's diagram: the book node's ⎇ button (and double-click) posts
+`openBookDiagram`; `SeriesPanel` resolves the book folder, gets/creates its
+`ManuscriptManager`, and calls `DiagramPanel.show(..., column)` with
+`this.panel.viewColumn + 1` — the column *beside* the series, so both canvases
+stay visible. `DiagramPanel.show` gained that trailing `column` parameter
+(default `ViewColumn.One`, so every existing caller is unchanged) and reveals
+an already-open panel in that column.
+
+### Adding a book
+`flowManuscript.addBookToSeries` (the `+` on the series row, and **+ Book** on
+the canvas) runs the same `gatherMeta()` prompts as New Manuscript, calls
+`ManuscriptManager.scaffold()` into `<series>/<slug>`, then
+`SeriesManager.addBook(slug, title)` records it and links it to the end of the
+chain. A book in a series is scaffolded identically to a standalone one — that
+equivalence is the whole point of the design and shouldn't be broken.

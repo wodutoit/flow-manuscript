@@ -1,7 +1,13 @@
 import * as vscode from "vscode";
 import { ManuscriptManager } from "./manuscriptManager";
-import { ManuscriptTreeProvider, FlowTreeItem } from "./treeProvider";
+import {
+  ManuscriptTreeProvider,
+  FlowTreeItem,
+  type DiscoveredRoot,
+} from "./treeProvider";
 import { DiagramPanel } from "./diagramPanel";
+import { SeriesManager } from "./seriesManager";
+import { SeriesPanel } from "./seriesPanel";
 import { EditorPanel } from "./editorPanel";
 import { toSlug } from "./frontmatter";
 import { AiAssist } from "./aiAssist";
@@ -17,8 +23,23 @@ let tree: ManuscriptTreeProvider | undefined;
 // parameterized by which manuscript root it applies to.
 const managers = new Map<string, ManuscriptManager>();
 
+// SeriesManagers, cached per SERIES root folder — a folder whose
+// outline.flow.json holds a `books` array instead of acts/nodes. Its books are
+// ordinary manuscripts one level down, each with its own ManuscriptManager in
+// `managers` above; nothing about a book changes because it lives in a series.
+const seriesManagers = new Map<string, SeriesManager>();
+
 export async function activate(context: vscode.ExtensionContext) {
   const ext = context.extensionUri;
+
+  const getSeries = async (rootKey: string): Promise<SeriesManager> => {
+    const existing = seriesManagers.get(rootKey);
+    if (existing) return existing;
+    const s = new SeriesManager(vscode.Uri.parse(rootKey));
+    await s.load();
+    seriesManagers.set(rootKey, s);
+    return s;
+  };
 
   const getManager = async (rootKey: string): Promise<ManuscriptManager> => {
     const existing = managers.get(rootKey);
@@ -29,8 +50,8 @@ export async function activate(context: vscode.ExtensionContext) {
     return m;
   };
 
-  /** A folder is a manuscript root iff it directly contains outline.flow.json. */
-  const isManuscriptRoot = async (uri: vscode.Uri): Promise<boolean> => {
+  /** True when a folder directly contains an outline.flow.json of any shape. */
+  const hasFlowFile = async (uri: vscode.Uri): Promise<boolean> => {
     try {
       await vscode.workspace.fs.stat(vscode.Uri.joinPath(uri, FLOW_FILE));
       return true;
@@ -40,37 +61,56 @@ export async function activate(context: vscode.ExtensionContext) {
   };
 
   /**
-   * Finds every manuscript in the open workspace: each workspace folder
-   * itself (covers "I opened a single book's folder", the original
+   * Finds every manuscript AND series in the open workspace: each workspace
+   * folder itself (covers "I opened a single book's folder", the original
    * behavior), plus each of its immediate subfolders (covers "I opened my
-   * `books` repo, which has one folder per book"). Not recursive beyond one
-   * level — that matches a flat `books/<book>/outline.flow.json` layout.
+   * `books` repo, which has one folder per book, and/or a series folder").
+   *
+   * A folder carrying an outline.flow.json is a SERIES root when that file has
+   * a `books` array, and a MANUSCRIPT root otherwise. Books belonging to a
+   * discovered series are dropped from the top level — they show nested under
+   * their series row instead, so a book never appears twice.
    */
-  const discoverManuscriptRoots = async (): Promise<vscode.Uri[]> => {
-    const roots: vscode.Uri[] = [];
+  const discoverRoots = async (): Promise<DiscoveredRoot[]> => {
+    const found: DiscoveredRoot[] = [];
     const seen = new Set<string>();
-    const add = (uri: vscode.Uri) => {
+    const add = async (uri: vscode.Uri) => {
       const key = uri.toString();
-      if (!seen.has(key)) {
-        seen.add(key);
-        roots.push(uri);
-      }
+      if (seen.has(key)) return;
+      if (!(await hasFlowFile(uri))) return;
+      seen.add(key);
+      found.push({
+        kind: (await SeriesManager.isSeriesRoot(uri)) ? "series" : "manuscript",
+        uri,
+      });
     };
+
     for (const folder of vscode.workspace.workspaceFolders ?? []) {
-      if (await isManuscriptRoot(folder.uri)) add(folder.uri);
+      await add(folder.uri);
       try {
         const entries = await vscode.workspace.fs.readDirectory(folder.uri);
         for (const [name, type] of entries) {
           if (type !== vscode.FileType.Directory) continue;
           if (name.startsWith(".") || name === "node_modules") continue;
-          const sub = vscode.Uri.joinPath(folder.uri, name);
-          if (await isManuscriptRoot(sub)) add(sub);
+          await add(vscode.Uri.joinPath(folder.uri, name));
         }
       } catch {
         // Folder listing not available (e.g. an unusual virtual FS) — skip.
       }
     }
-    return roots;
+
+    // Drop any manuscript that is a book of a series we also found.
+    const bookKeys = new Set<string>();
+    for (const r of found) {
+      if (r.kind !== "series") continue;
+      const series = await getSeries(r.uri.toString());
+      for (const b of series.getBooks()) {
+        bookKeys.add(series.bookUri(b).toString());
+      }
+    }
+    return found.filter(
+      (r) => r.kind === "series" || !bookKeys.has(r.uri.toString())
+    );
   };
 
   // Single process-wide AI assist singleton (not per-manuscript) — see
@@ -93,7 +133,7 @@ export async function activate(context: vscode.ExtensionContext) {
   // AI model: only when the Flow Manuscript tree becomes visible, not merely
   // on activate() and not merely because the ai.enabled setting is on (see
   // AiAssist.ensureReady(), which itself no-ops unless the setting is on).
-  tree = new ManuscriptTreeProvider(getManager, discoverManuscriptRoots);
+  tree = new ManuscriptTreeProvider(getManager, getSeries, discoverRoots);
   const treeView = vscode.window.createTreeView("flowManuscript.tree", {
     treeDataProvider: tree,
   });
@@ -202,6 +242,90 @@ export async function activate(context: vscode.ExtensionContext) {
         }
         const m = await getManager(rootKey);
         DiagramPanel.show(ext, m, rootKey, (nodeId) => openNode(rootKey, nodeId));
+      }
+    )
+  );
+
+  // --- command: open the diagram for a SERIES -------------------------------
+  // Reuses the diagram webview bundle in "series" mode. Clicking a book node's
+  // diagram icon opens that book's own canvas in the column beside this one.
+  const openSeriesDiagram = async (rootKey: string) => {
+    const series = await getSeries(rootKey);
+    SeriesPanel.show(
+      ext,
+      series,
+      rootKey,
+      async (bookName, column) => {
+        const bookKey = vscode.Uri.joinPath(
+          series.rootUri,
+          bookName
+        ).toString();
+        const m = await getManager(bookKey);
+        DiagramPanel.show(
+          ext,
+          m,
+          bookKey,
+          (nodeId) => openNode(bookKey, nodeId),
+          column
+        );
+      },
+      () => addBookToSeries(rootKey)
+    );
+  };
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "flowManuscript.openSeriesDiagram",
+      async (arg?: string | FlowTreeItem) => {
+        const rootKey =
+          typeof arg === "string" ? arg : arg?.seriesRoot ?? arg?.manuscriptRoot;
+        if (!rootKey) {
+          vscode.window.showErrorMessage(
+            "Select a series in the Flow Manuscript view first."
+          );
+          return;
+        }
+        await openSeriesDiagram(rootKey);
+      }
+    )
+  );
+
+  // --- command: add a new book to a series ---------------------------------
+  // Scaffolds a full manuscript inside the series folder (identical to New
+  // Manuscript — a book in a series is an ordinary manuscript), then records it
+  // as the next book in the series file.
+  const addBookToSeries = async (rootKey: string) => {
+    const series = await getSeries(rootKey);
+    const meta = await gatherMeta();
+    if (!meta) return;
+
+    const target = vscode.Uri.joinPath(series.rootUri, meta.slug);
+    try {
+      await vscode.workspace.fs.stat(target);
+      vscode.window.showErrorMessage(
+        `A folder named "${meta.slug}" already exists in this series.`
+      );
+      return;
+    } catch {
+      /* good: does not exist */
+    }
+
+    await ManuscriptManager.scaffold(ext, target, meta);
+    await series.addBook(meta.slug, meta.title);
+    tree?.refresh();
+    vscode.window.showInformationMessage(
+      `Added "${meta.title}" to the ${series.name} series.`
+    );
+  };
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand(
+      "flowManuscript.addBookToSeries",
+      async (arg?: string | FlowTreeItem) => {
+        const rootKey =
+          typeof arg === "string" ? arg : arg?.seriesRoot ?? arg?.manuscriptRoot;
+        if (!rootKey) return;
+        await addBookToSeries(rootKey);
       }
     )
   );
@@ -452,6 +576,8 @@ export async function activate(context: vscode.ExtensionContext) {
 
 export function deactivate() {
   managers.clear();
+  for (const s of seriesManagers.values()) s.dispose();
+  seriesManagers.clear();
   tree = undefined;
 }
 

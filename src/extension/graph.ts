@@ -5,6 +5,9 @@ import type {
   DiagramState,
   DiagramActVM,
   Act,
+  SeriesDocument,
+  SeriesBookVM,
+  SeriesState,
 } from "../shared/types";
 
 /**
@@ -179,4 +182,75 @@ export function buildDiagramState(
   }));
 
   return { nodes, edges: doc.edges, acts, invalidActIds: [...badActs] };
+}
+
+// ---------------------------------------------------------------------------
+// Series graph. A series is books + "order" edges between them — the same
+// single-start rule as an act, one level up. Pure functions, no I/O.
+// ---------------------------------------------------------------------------
+
+/** Books with no incoming order edge. Exactly one is valid. */
+export function seriesRoots(doc: SeriesDocument): string[] {
+  const ids = new Set(doc.books.map((b) => b.id));
+  const hasIncoming = new Set<string>();
+  for (const e of doc.edges) {
+    if (e.kind !== "order") continue;
+    if (ids.has(e.target) && ids.has(e.source)) hasIncoming.add(e.target);
+  }
+  return doc.books.map((b) => b.id).filter((id) => !hasIncoming.has(id));
+}
+
+/**
+ * Walk the book chain from its root, returning ordered book ids. Best-effort
+ * when there are 0 or 2+ roots so the UI still shows something sensible:
+ * unreachable books are appended in their stored `order`.
+ */
+export function orderedBookIds(doc: SeriesDocument): string[] {
+  const ids = new Set(doc.books.map((b) => b.id));
+  const nextOf = new Map<string, string>();
+  for (const e of doc.edges) {
+    if (e.kind !== "order") continue;
+    if (ids.has(e.source) && ids.has(e.target) && !nextOf.has(e.source)) {
+      nextOf.set(e.source, e.target);
+    }
+  }
+  const visited = new Set<string>();
+  const out: string[] = [];
+  const walk = (start: string) => {
+    let cur: string | undefined = start;
+    while (cur && !visited.has(cur)) {
+      visited.add(cur);
+      out.push(cur);
+      cur = nextOf.get(cur);
+    }
+  };
+  const byOrder = [...doc.books].sort(
+    (a, b) => a.order - b.order || (a.name < b.name ? -1 : 1)
+  );
+  const roots = new Set(seriesRoots(doc));
+  for (const b of byOrder) if (roots.has(b.id)) walk(b.id);
+  for (const b of byOrder) if (!visited.has(b.id)) walk(b.id);
+  return out;
+}
+
+/** Build the view-model the series diagram consumes. */
+export function buildSeriesState(
+  doc: SeriesDocument,
+  meta: { name: string; existingFolders: Set<string> }
+): SeriesState {
+  const roots = new Set(seriesRoots(doc));
+  const invalid = doc.books.length > 0 && roots.size !== 1;
+  const numbers = new Map<string, number>();
+  orderedBookIds(doc).forEach((id, i) => numbers.set(id, i + 1));
+
+  const books: SeriesBookVM[] = doc.books.map((b) => ({
+    ...b,
+    bookNumber: numbers.get(b.id),
+    exists: meta.existingFolders.has(b.name),
+    isRoot: roots.has(b.id),
+    isInvalidRoot: invalid && roots.has(b.id),
+  }));
+  books.sort((a, b) => (a.bookNumber ?? 1e9) - (b.bookNumber ?? 1e9));
+
+  return { name: meta.name, books, edges: doc.edges, invalid };
 }

@@ -1,5 +1,9 @@
 import { Handle, Position, NodeResizer, type NodeProps } from "reactflow";
-import type { DiagramNodeVM, DiagramActVM } from "../../src/shared/types";
+import type {
+  DiagramNodeVM,
+  DiagramActVM,
+  SeriesBookVM,
+} from "../../src/shared/types";
 import { post } from "./bridge";
 
 /** Small delete affordance shown on every node. */
@@ -169,8 +173,69 @@ export function ActNode({
   );
 }
 
+/**
+ * Book node on the SERIES canvas. Deliberately minimal: reading number, name,
+ * and one icon that opens that book's own diagram in the tab beside this one.
+ * Nothing here reads the book's flow file, so opening a series stays cheap
+ * however many books it has.
+ */
+export function BookNode({ data, selected }: NodeProps<SeriesBookVM>) {
+  const { id, name, title, bookNumber, exists, isInvalidRoot } = data;
+  return (
+    <div
+      className={`node node--book${isInvalidRoot ? " node--invalid" : ""}${
+        exists ? "" : " node--missing"
+      }`}
+    >
+      <NodeResizer
+        isVisible={selected}
+        minWidth={180}
+        minHeight={90}
+        onResizeEnd={(_e, params) => {
+          post({
+            type: "resizeBook",
+            bookId: id,
+            size: { width: params.width, height: params.height },
+          });
+        }}
+      />
+      <Handle type="target" position={Position.Left} id="in" />
+      <div className="node__num">{bookNumber ?? "\u2022"}</div>
+      <div className="node__body">
+        <div className="node__title">{title ?? name}</div>
+        <div className="node__meta">{name}</div>
+        {exists ? null : (
+          <div className="node__meta node__meta--error">folder not found</div>
+        )}
+      </div>
+      <button
+        className="node__diagram"
+        title="Open this book's diagram beside this one"
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={(e) => {
+          e.stopPropagation();
+          post({ type: "openBookDiagram", bookId: id });
+        }}
+        disabled={!exists}
+      >
+        {"\u2387"}
+      </button>
+      {isInvalidRoot ? (
+        <div
+          className="node__warn"
+          title="More than one starting book — a series should have exactly one Book 1"
+        >
+          !
+        </div>
+      ) : null}
+      <Handle type="source" position={Position.Right} id="out" />
+    </div>
+  );
+}
+
 export const nodeTypes = {
   act: ActNode,
+  book: BookNode,
   scene: SceneNode,
   character: CharacterNode,
   place: PlaceNode,

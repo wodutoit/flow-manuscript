@@ -14,18 +14,21 @@ export class DiagramPanel {
     extensionUri: vscode.Uri,
     manager: ManuscriptManager,
     rootKey: string,
-    openEditor: (nodeId: string) => void
+    openEditor: (nodeId: string) => void,
+    /** Where to open it. Defaults to column one; the series canvas passes the
+     * column beside itself so a book opens next to the series, not over it. */
+    column: vscode.ViewColumn = vscode.ViewColumn.One
   ) {
     const existing = DiagramPanel.panels.get(rootKey);
     if (existing) {
-      existing.panel.reveal();
+      existing.panel.reveal(column);
       return;
     }
     const title = `Flow: ${path.basename(manager.rootUri.fsPath)}`;
     const panel = vscode.window.createWebviewPanel(
       "flowManuscript.diagram",
       title,
-      vscode.ViewColumn.One,
+      column,
       {
         enableScripts: true,
         retainContextWhenHidden: true,

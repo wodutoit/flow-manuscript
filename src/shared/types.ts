@@ -68,6 +68,57 @@ export interface FlowDocument {
   edges: FlowEdge[];
 }
 
+// ---------------------------------------------------------------------------
+// Series: a folder whose outline.flow.json holds a `books` array instead of
+// acts/nodes. Each entry names an immediate subfolder that is itself a normal
+// manuscript root (it has its own outline.flow.json). The series file is the
+// only place series data lives — books know nothing about the series.
+// ---------------------------------------------------------------------------
+
+/** One book in a series, as stored in a series outline.flow.json. */
+export interface SeriesBook {
+  id: string; // stable id, unique within the series file
+  /** Folder name of the book, relative to the series root. */
+  name: string;
+  /** Optional display title; falls back to `name` when absent. */
+  title?: string;
+  /** 1-based reading order; kept in sync with the order-edge chain. */
+  order: number;
+  /** Canvas position on the series diagram. */
+  position: { x: number; y: number };
+  /** Manual node size on the series diagram (defaults applied if absent). */
+  size?: { width: number; height: number };
+}
+
+/** The series sidecar: same filename as a manuscript's, different shape. */
+export interface SeriesDocument {
+  version: 2;
+  books: SeriesBook[];
+  /** Only "order" edges are meaningful between books. */
+  edges: FlowEdge[];
+}
+
+/** Book view-model for the series diagram (derived fields are not stored). */
+export interface SeriesBookVM extends SeriesBook {
+  /** Derived reading number from the order-edge chain (1-based). */
+  bookNumber?: number;
+  /** True when the book folder exists and contains an outline.flow.json. */
+  exists: boolean;
+  /** True when this book has no incoming order edge. */
+  isRoot: boolean;
+  /** True when this book renders red (more than one starting book). */
+  isInvalidRoot: boolean;
+}
+
+export interface SeriesState {
+  /** Series folder name, shown in the diagram toolbar. */
+  name: string;
+  books: SeriesBookVM[];
+  edges: FlowEdge[];
+  /** True when the series has more or fewer than one starting book. */
+  invalid: boolean;
+}
+
 /** Manuscript-level metadata gathered at creation and stored in overview.md frontmatter. */
 export interface ManuscriptMeta {
   title: string;
@@ -177,10 +228,19 @@ export type DiagramToHost =
   | { type: "resizeAct"; actId: string; size: { width: number; height: number } }
   | { type: "arrangeAct"; actId: string }
   | { type: "moveSceneToAct"; sceneId: string; actId: string }
-  | { type: "addSceneToAct"; actId: string };
+  | { type: "addSceneToAct"; actId: string }
+  // series operations (only ever sent when the panel is in series mode)
+  | { type: "addBook" }
+  | { type: "openBookDiagram"; bookId: string }
+  | { type: "moveBook"; bookId: string; position: { x: number; y: number } }
+  | { type: "resizeBook"; bookId: string; size: { width: number; height: number } }
+  | { type: "connectBooks"; source: string; target: string }
+  | { type: "deleteBookEdge"; edgeId: string };
 
 // host -> Diagram webview
-export type HostToDiagram = { type: "state"; state: DiagramState };
+export type HostToDiagram =
+  | { type: "state"; state: DiagramState }
+  | { type: "seriesState"; state: SeriesState };
 
 // Editor webview -> host
 export type EditorToHost =

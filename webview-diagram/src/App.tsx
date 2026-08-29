@@ -21,6 +21,7 @@ import type {
   DiagramState,
   DiagramNodeVM,
   DiagramActVM,
+  SeriesState,
   EdgeKind,
 } from "../../src/shared/types";
 
@@ -222,11 +223,81 @@ function layoutEdges(state: DiagramState): Edge[] {
   return edges;
 }
 
+// ---- series layout ---------------------------------------------------------
+// A series canvas is one flat row of book nodes joined by order arrows. Stored
+// positions win, but a position of {0,0} — or one that duplicates a position
+// already taken, which is what a hand-written series file tends to have — falls
+// back to the next slot in the row so books never stack on top of each other.
+
+const BOOK_W = 260;
+const BOOK_H = 132;
+const BOOK_GAP_X = 80;
+
+function layoutSeries(state: SeriesState): Node[] {
+  const used = new Set<string>();
+  let cursorX = 40;
+  const rowY = 80;
+
+  return state.books.map((b) => {
+    const w = b.size?.width ?? BOOK_W;
+    const h = b.size?.height ?? BOOK_H;
+    const key = `${Math.round(b.position.x)},${Math.round(b.position.y)}`;
+    const placed =
+      (b.position.x !== 0 || b.position.y !== 0) && !used.has(key);
+
+    let position: { x: number; y: number };
+    if (placed) {
+      position = b.position;
+      used.add(key);
+      cursorX = Math.max(cursorX, b.position.x + w + BOOK_GAP_X);
+    } else {
+      position = { x: cursorX, y: rowY };
+      used.add(`${Math.round(cursorX)},${rowY}`);
+      cursorX += w + BOOK_GAP_X;
+    }
+
+    return {
+      id: b.id,
+      type: "book",
+      position,
+      data: b,
+      style: { width: w, height: h },
+      draggable: true,
+      selectable: true,
+    } as Node;
+  });
+}
+
+function layoutSeriesEdges(state: SeriesState): Edge[] {
+  return state.edges.map((e) => ({
+    id: e.id,
+    type: "series",
+    source: e.source,
+    target: e.target,
+    sourceHandle: "out",
+    targetHandle: "in",
+    style: { strokeWidth: 3 },
+    markerEnd: { type: MarkerType.ArrowClosed },
+    // Wide invisible hit band so the thin arrow is easy to click (selecting it
+    // is what reveals its delete button).
+    interactionWidth: 24,
+  }));
+}
+
 function Canvas() {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [drawKind, setDrawKind] = useState<EdgeKind>("order");
   const [invalidActCount, setInvalidActCount] = useState(0);
+  // The panel decides which canvas this is by the first message it sends:
+  // "state" (a manuscript) or "seriesState" (a series). Until then we render
+  // an empty canvas with no toolbar, so no book-level control ever flashes on
+  // a series canvas.
+  const [mode, setMode] = useState<"loading" | "manuscript" | "series">(
+    "loading"
+  );
+  const [series, setSeries] = useState<SeriesState | null>(null);
+  const modeRef = useRef<"loading" | "manuscript" | "series">("loading");
 
   const actRectsRef = useRef<
     Map<string, { x: number; y: number; w: number; h: number }>
@@ -241,7 +312,19 @@ function Canvas() {
 
   useEffect(() => {
     const off = onHostMessage((msg) => {
+      if (msg.type === "seriesState") {
+        setMode("series");
+        modeRef.current = "series";
+        setSeries(msg.state);
+        const laidOut = layoutSeries(msg.state);
+        setNodes(laidOut);
+        nodesRef.current = laidOut;
+        setEdges(layoutSeriesEdges(msg.state));
+        return;
+      }
       if (msg.type === "state") {
+        setMode("manuscript");
+        modeRef.current = "manuscript";
         const { nodes: laidOut, actRects } = layout(msg.state);
         actRectsRef.current = actRects;
         const map = new Map<string, string>();
@@ -264,6 +347,7 @@ function Canvas() {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
+      if (modeRef.current === "series") return; // no scene duplication here
       if (e.key === "c" || e.key === "C") {
         if (selectedIdRef.current) copiedIdRef.current = selectedIdRef.current;
       } else if (e.key === "v" || e.key === "V") {
@@ -304,6 +388,10 @@ function Canvas() {
   const onConnect = useCallback(
     (c: Connection) => {
       if (!c.source || !c.target) return;
+      if (modeRef.current === "series") {
+        post({ type: "connectBooks", source: c.source, target: c.target });
+        return;
+      }
       if (c.sourceHandle === "act-out" || c.targetHandle === "act-in") {
         post({ type: "connectActs", sourceActId: c.source, targetActId: c.target });
         return;
@@ -326,7 +414,9 @@ function Canvas() {
 
   // Double-click: open a scene in the editor; toggle collapse on an act.
   const onNodeDoubleClick: NodeMouseHandler = useCallback((_e, node) => {
-    if (node.type === "act") {
+    if (node.type === "book") {
+      post({ type: "openBookDiagram", bookId: node.id });
+    } else if (node.type === "act") {
       const collapsed = !!(node.data as DiagramActVM).collapsed;
       post({ type: "setActCollapsed", actId: node.id, collapsed: !collapsed });
     } else if (node.type === "scene") {
@@ -350,6 +440,20 @@ function Canvas() {
 
   const onNodeDragStop: NodeMouseHandler = useCallback(
     (_e, node) => {
+      if (modeRef.current === "series") {
+        // Books have no container to fall into — just persist where they land
+        // (every selected one, so a multi-drag sticks too).
+        const sel = selectedIdsRef.current;
+        const moved =
+          sel.size > 1
+            ? nodesRef.current.filter((n) => sel.has(n.id) && n.type === "book")
+            : [node];
+        for (const n of moved) {
+          post({ type: "moveBook", bookId: n.id, position: n.position });
+        }
+        return;
+      }
+
       const selected = selectedIdsRef.current;
 
       // Multi-node drag: persist positions for all selected act/scene nodes.
@@ -410,58 +514,82 @@ function Canvas() {
   const onEdgesDelete = useCallback((deleted: Edge[]) => {
     for (const e of deleted) {
       if (e.type === "flow") post({ type: "deleteEdge", edgeId: e.id });
+      else if (e.type === "series") post({ type: "deleteBookEdge", edgeId: e.id });
     }
   }, []);
 
   return (
     <div className="canvas">
-      <div className="toolbar">
-        <div className="toolbar__group">
-          <button onClick={() => post({ type: "addAct" })}>+ Act</button>
-          <button onClick={() => post({ type: "addNode", kind: "character" })}>
-            + Character
-          </button>
-          <button onClick={() => post({ type: "addNode", kind: "place" })}>
-            + Place
-          </button>
-          <button
-            onClick={() => {
-              if (selectedIdRef.current)
-                post({ type: "duplicateNode", nodeId: selectedIdRef.current });
-            }}
-            title="Duplicate the selected scene (or Ctrl/Cmd+C then Ctrl/Cmd+V)"
-          >
-            Duplicate
-          </button>
-        </div>
-        <div className="toolbar__group">
-          <span className="toolbar__label">New connection:</span>
-          <button
-            className={drawKind === "order" ? "active" : ""}
-            onClick={() => setDrawKind("order")}
-            title="Solid arrow — story order within an act"
-          >
-            Order (solid)
-          </button>
-          <button
-            className={drawKind === "logical" ? "active" : ""}
-            onClick={() => setDrawKind("logical")}
-            title="Dashed arrow — POV / logical link"
-          >
-            Logical (dashed)
-          </button>
-        </div>
-        {invalidActCount > 0 ? (
-          <div className="toolbar__warn">
-            {invalidActCount} act{invalidActCount === 1 ? "" : "s"} have more
-            than one starting scene — each act should have exactly one.
+      {mode === "series" ? (
+        // Series toolbar. Everything book-level (acts, scenes, characters,
+        // places, duplicate, edge-kind) is absent by construction, not hidden
+        // with CSS — none of it means anything at the series level.
+        <div className="toolbar">
+          <div className="toolbar__group">
+            <button onClick={() => post({ type: "addBook" })}>+ Book</button>
           </div>
-        ) : (
-          <div className="toolbar__hint">
-            Shift+drag to select multiple; drag to move them together
+          {series?.invalid ? (
+            <div className="toolbar__warn">
+              This series doesn't have exactly one starting book — connect the
+              books into a single chain.
+            </div>
+          ) : (
+            <div className="toolbar__hint">
+              {series ? `${series.name} — ` : ""}drag to arrange; connect books
+              to set reading order; click a book's ⎇ icon to open its diagram
+              beside this one
+            </div>
+          )}
+        </div>
+      ) : mode === "manuscript" ? (
+        <div className="toolbar">
+          <div className="toolbar__group">
+            <button onClick={() => post({ type: "addAct" })}>+ Act</button>
+            <button onClick={() => post({ type: "addNode", kind: "character" })}>
+              + Character
+            </button>
+            <button onClick={() => post({ type: "addNode", kind: "place" })}>
+              + Place
+            </button>
+            <button
+              onClick={() => {
+                if (selectedIdRef.current)
+                  post({ type: "duplicateNode", nodeId: selectedIdRef.current });
+              }}
+              title="Duplicate the selected scene (or Ctrl/Cmd+C then Ctrl/Cmd+V)"
+            >
+              Duplicate
+            </button>
           </div>
-        )}
-      </div>
+          <div className="toolbar__group">
+            <span className="toolbar__label">New connection:</span>
+            <button
+              className={drawKind === "order" ? "active" : ""}
+              onClick={() => setDrawKind("order")}
+              title="Solid arrow — story order within an act"
+            >
+              Order (solid)
+            </button>
+            <button
+              className={drawKind === "logical" ? "active" : ""}
+              onClick={() => setDrawKind("logical")}
+              title="Dashed arrow — POV / logical link"
+            >
+              Logical (dashed)
+            </button>
+          </div>
+          {invalidActCount > 0 ? (
+            <div className="toolbar__warn">
+              {invalidActCount} act{invalidActCount === 1 ? "" : "s"} have more
+              than one starting scene — each act should have exactly one.
+            </div>
+          ) : (
+            <div className="toolbar__hint">
+              Shift+drag to select multiple; drag to move them together
+            </div>
+          )}
+        </div>
+      ) : null}
 
       <ReactFlow
         nodes={nodes}
@@ -488,7 +616,11 @@ function Canvas() {
         <Controls />
         <MiniMap
           nodeColor={(n) =>
-            n.type === "act"
+            n.type === "book"
+              ? (n.data as { isInvalidRoot?: boolean }).isInvalidRoot
+                ? "var(--vscode-errorForeground)"
+                : "#b197fc"
+              : n.type === "act"
               ? "var(--vscode-editorWidget-border, #888)"
               : n.type === "scene"
               ? (n.data as DiagramNodeVM).isInvalidRoot

@@ -94,6 +94,70 @@ export function FlowEdge({
   );
 }
 
+/**
+ * Series edge: reading order between two books. Only ever one kind, so the
+ * tools are just a delete button — no kind toggle.
+ */
+export function SeriesEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  markerEnd,
+  style,
+  selected,
+}: EdgeProps) {
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+  });
+
+  return (
+    <>
+      <BaseEdge
+        id={id}
+        path={edgePath}
+        markerEnd={markerEnd}
+        style={{
+          ...style,
+          ...(selected
+            ? { stroke: "var(--vscode-focusBorder)", strokeWidth: 4 }
+            : null),
+        }}
+      />
+      {selected ? (
+        <EdgeLabelRenderer>
+          <div
+            className="edge-tools edge-tools--visible"
+            style={{
+              transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+            }}
+          >
+            <button
+              className="edge-tools__del"
+              title="Delete this book order link"
+              onClick={(e) => {
+                e.stopPropagation();
+                post({ type: "deleteBookEdge", edgeId: id });
+              }}
+            >
+              {"\u00D7"}
+            </button>
+          </div>
+        </EdgeLabelRenderer>
+      ) : null}
+    </>
+  );
+}
+
 export const edgeTypes = {
   flow: FlowEdge,
+  series: SeriesEdge,
 };
