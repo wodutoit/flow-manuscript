@@ -1,0 +1,11 @@
+# Normalise text files to LF in the repo AND in working trees (all platforms).
+* text=auto eol=lf
+
+# Binary files: never touch.
+*.vsix binary
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.dic binary
+*.aff binary

@@ -11,6 +11,7 @@ import { SeriesPanel } from "./seriesPanel";
 import { EditorPanel } from "./editorPanel";
 import { toSlug } from "./frontmatter";
 import { AiAssist } from "./aiAssist";
+import { kindLabel } from "../shared/types";
 import type { ManuscriptMeta } from "../shared/types";
 
 const FLOW_FILE = "outline.flow.json";
@@ -210,7 +211,8 @@ export async function activate(context: vscode.ExtensionContext) {
           tree?.refresh();
           vscode.window.showInformationMessage(
             `Imported ${summary.scenes} scene(s) (${summary.ordered} ordered), ` +
-              `${summary.characters} character(s), ${summary.places} place(s). ` +
+              `${summary.characters} character(s), ${summary.places} place(s), ` +
+              `${summary.contexts} context item(s). ` +
               `It now shows in the Flow Manuscript view.`
           );
         } catch (e: any) {
@@ -381,12 +383,12 @@ export async function activate(context: vscode.ExtensionContext) {
     });
 
   const addEntity = async (
-    kind: "character" | "place",
+    kind: "character" | "place" | "context",
     item?: FlowTreeItem
   ) => {
     if (!item?.manuscriptRoot) return;
     const m = await getManager(item.manuscriptRoot);
-    const name = await promptName(kind[0].toUpperCase() + kind.slice(1));
+    const name = await promptName(kindLabel(kind));
     if (!name) return;
     await m.createNode(kind, name.trim(), {});
   };
@@ -398,6 +400,29 @@ export async function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand(
       "flowManuscript.addPlace",
       (item?: FlowTreeItem) => addEntity("place", item)
+    ),
+    vscode.commands.registerCommand(
+      "flowManuscript.addContext",
+      (item?: FlowTreeItem) => addEntity("context", item)
+    ),
+    // Explicit file rename — the only thing that ever renames a node's file.
+    vscode.commands.registerCommand(
+      "flowManuscript.renameFile",
+      async (item?: FlowTreeItem) => {
+        if (!item?.manuscriptRoot || !item?.nodeId) return;
+        const m = await getManager(item.manuscriptRoot);
+        const node = m.getNode(item.nodeId);
+        if (!node) return;
+        const current = node.file.split("/").pop()!.replace(/\.md$/i, "");
+        const stem = await vscode.window.showInputBox({
+          prompt: `Rename file for "${node.name}" (without .md)`,
+          value: m.suggestedStem(item.nodeId) ?? current,
+          validateInput: (v) => (v.trim() ? undefined : "Name is required"),
+        });
+        if (!stem) return;
+        const err = await m.renameFile(item.nodeId, stem);
+        if (err) vscode.window.showErrorMessage(`Couldn't rename file: ${err}`);
+      }
     )
   );
 
@@ -410,12 +435,7 @@ export async function activate(context: vscode.ExtensionContext) {
         const m = await getManager(item.manuscriptRoot);
         const node = m.getNode(item.nodeId);
         if (!node) return;
-        const label =
-          node.kind === "scene"
-            ? "Scene"
-            : node.kind === "character"
-            ? "Character"
-            : "Place";
+        const label = kindLabel(node.kind);
         const choice = await vscode.window.showWarningMessage(
           `Delete this ${label} "${node.name}"?`,
           {

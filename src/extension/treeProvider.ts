@@ -201,6 +201,7 @@ export class ManuscriptTreeProvider
         ["Scenes", "scene", "list-ordered"],
         ["Characters", "character", "person"],
         ["Places", "place", "location"],
+        ["Context", "context", "note"],
       ];
       const groupItems = groups.map(([label, kind, icon]) => {
         const item = new FlowTreeItem(

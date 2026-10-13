@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as path from "path";
 import { ManuscriptManager } from "./manuscriptManager";
 import { webviewHtml } from "./webviewHtml";
+import { kindLabel } from "../shared/types";
 import type { DiagramToHost, HostToDiagram, NodeKind } from "../shared/types";
 
 /** One diagram panel per manuscript root; multiple can be open at once. */
@@ -98,12 +99,7 @@ export class DiagramPanel {
       case "deleteNode": {
         const node = this.manager.getNode(m.nodeId);
         if (!node) break;
-        const label =
-          node.kind === "scene"
-            ? "Scene"
-            : node.kind === "character"
-            ? "Character"
-            : "Place";
+        const label = kindLabel(node.kind);
         const choice = await vscode.window.showWarningMessage(
           `Are you sure you want to delete this ${label}? The underlying file will be deleted and this cannot be undone.`,
           { modal: true },
@@ -117,6 +113,15 @@ export class DiagramPanel {
       case "duplicateNode":
         await this.manager.duplicateNode(m.nodeId);
         break;
+      case "syncNumbers": {
+        const changed = await this.manager.syncSceneNumbers();
+        vscode.window.showInformationMessage(
+          changed === 0
+            ? "Scene numbers are already in sync."
+            : `Updated scene numbers in ${changed} file${changed === 1 ? "" : "s"}.`
+        );
+        break;
+      }
       case "addNode":
         await this.promptAndAddNode(m.kind, m.afterNodeId, m.actId);
         break;
@@ -211,8 +216,7 @@ export class DiagramPanel {
       }
     }
 
-    const label =
-      kind === "scene" ? "Scene" : kind === "character" ? "Character" : "Place";
+    const label = kindLabel(kind);
     const name = await vscode.window.showInputBox({
       prompt: `${label} name`,
       validateInput: (v) => (v.trim() ? undefined : "Name is required"),

@@ -180,7 +180,14 @@ Invariants and rules (DO NOT BREAK):
 - **Validation is per-act:** each act must have exactly one root scene (no
   incoming order edge from a fellow member). An act with 2+ roots flags those
   scenes red (`isInvalidRoot`) and the act is in `invalidActIds`.
-- Filenames = kebab-cased node name (extension-created). Skill/imported scenes
+- **No automatic file renames or frontmatter rewrites** (git-friendliness).
+  Renaming a node changes display name + `name:` only; `renameFile` (tree
+  "Rename File…") is the sole file mover. `syncSceneNumbers()` runs only from the
+  diagram's "Sync numbers" button (`syncNumbers` message).
+- **Context nodes** (`kind: "context"`, folder `context/`): free-standing, no
+  edges, no template; folder created lazily on first add; frontmatter `name` +
+  free-text `type`.
+- Filenames = kebab-cased node name at creation (extension-created). Skill/imported scenes
   keep their `NNN-*.md` names untouched.
 - `syncSceneNumbers()` writes derived `scene:`/`chapter:` back into each scene's
   frontmatter. Opening a migrated book WILL rewrite frontmatter for renumbered

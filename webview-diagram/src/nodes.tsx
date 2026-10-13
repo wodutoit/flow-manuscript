@@ -75,6 +75,16 @@ export function PlaceNode({ id, data }: NodeProps<DiagramNodeVM>) {
   );
 }
 
+export function ContextNode({ id, data }: NodeProps<DiagramNodeVM>) {
+  return (
+    <div className="node node--context">
+      <DeleteButton id={id} />
+      <div className="node__kind">Context</div>
+      <div className="node__title">{data.name}</div>
+    </div>
+  );
+}
+
 /**
  * Act container node. Holds scene child nodes (via React Flow parentNode).
  * Header shows the act number + name and action buttons; when collapsed it
@@ -239,4 +249,5 @@ export const nodeTypes = {
   scene: SceneNode,
   character: CharacterNode,
   place: PlaceNode,
+  context: ContextNode,
 };

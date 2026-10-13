@@ -241,14 +241,20 @@ export class ManuscriptManager {
    * - Scene order: the leading NNN- filename prefix wins; if absent, the
    *   frontmatter `scene:` number is used; scenes with neither are left
    *   unconnected. Ordered scenes are chained with solid "order" edges.
-   * - Characters and places are always unconnected nodes.
+   * - Characters, places and context items are always unconnected nodes.
    * - Existing filenames are never changed.
    *
    * Returns a summary, or throws if a flow file already exists (caller warns).
    */
   static async importFromFolder(
     root: vscode.Uri
-  ): Promise<{ scenes: number; characters: number; places: number; ordered: number }> {
+  ): Promise<{
+    scenes: number;
+    characters: number;
+    places: number;
+    contexts: number;
+    ordered: number;
+  }> {
     const flowUri = vscode.Uri.joinPath(root, FLOW_FILE);
     // Refuse if a flow file already exists.
     try {
@@ -393,6 +399,21 @@ export class ManuscriptManager {
       });
     }
 
+    // --- context (world-building, background, poems) ---
+    const contextFiles = await listMd("context");
+    let xi = 0;
+    for (const file of contextFiles) {
+      const rel = `context/${file}`;
+      const { name } = await readName(rel, stemOf(file));
+      nodes.push({
+        id: randomUUID(),
+        kind: "context",
+        file: rel,
+        name,
+        position: { x: 80 + xi++ * 200, y: 580 },
+      });
+    }
+
     const acts: Act[] =
       actSceneIds.length > 0
         ? [
@@ -416,6 +437,7 @@ export class ManuscriptManager {
       scenes: scenes.length,
       characters: charFiles.length,
       places: placeFiles.length,
+      contexts: contextFiles.length,
       ordered: ordered.length,
     };
   }
@@ -482,7 +504,6 @@ export class ManuscriptManager {
     a.order = b.order;
     b.order = tmp;
     this.renumberActs();
-    await this.syncSceneNumbers();
     await this.persist();
     this._onDidChange.fire();
   }
@@ -499,7 +520,6 @@ export class ManuscriptManager {
     const tgtIdx = without.findIndex((a) => a.id === targetActId);
     without.splice(tgtIdx, 0, src);
     without.forEach((a, i) => (a.order = i + 1));
-    await this.syncSceneNumbers();
     await this.persist();
     this._onDidChange.fire();
   }
@@ -672,7 +692,6 @@ export class ManuscriptManager {
     }
     this.flow.acts = this.flow.acts.filter((a) => a.id !== id);
     this.renumberActs();
-    await this.syncSceneNumbers();
     await this.persist();
     this._onDidChange.fire();
     return sceneIds.length;
@@ -708,7 +727,6 @@ export class ManuscriptManager {
         target: sceneId,
       });
     }
-    await this.syncSceneNumbers();
     await this.persist();
     this._onDidChange.fire();
   }
@@ -734,7 +752,13 @@ export class ManuscriptManager {
   }
 
   private folderFor(kind: NodeKind): string {
-    return kind === "scene" ? "scenes" : kind === "character" ? "characters" : "places";
+    return kind === "scene"
+      ? "scenes"
+      : kind === "character"
+      ? "characters"
+      : kind === "context"
+      ? "context"
+      : "places";
   }
 
   private templateFor(kind: NodeKind): string {
@@ -774,13 +798,23 @@ export class ManuscriptManager {
     const stem = await this.uniqueStem(folder, toSlug(name));
     const rel = `${folder}/${stem}.md`;
 
-    // Materialize the file from its template, patching frontmatter.
-    const template = await readTemplate(this.extensionUri, this.templateFor(kind));
-    const parsed = parseDoc<Record<string, unknown>>(template);
+    // Context items have no bundled template and their folder is created on
+    // first use (existing books don't have one).
+    let parsed: { frontmatter: Record<string, unknown>; body: string };
+    if (kind === "context") {
+      await vscode.workspace.fs.createDirectory(
+        vscode.Uri.joinPath(this.root, folder)
+      );
+      parsed = { frontmatter: { name, type: "" }, body: `# ${name}\n\n` };
+    } else {
+      // Materialize the file from its template, patching frontmatter.
+      const template = await readTemplate(this.extensionUri, this.templateFor(kind));
+      parsed = parseDoc<Record<string, unknown>>(template);
+    }
     parsed.frontmatter.name = name;
     if (kind === "scene") {
       parsed.frontmatter.pov = extra.pov ?? "";
-      // scene/chapter numbers are patched by syncSceneNumbers after wiring edges
+      // scene/chapter numbers are written only by the explicit "Sync numbers"
     }
     // Replace the leading "# <Name>" heading placeholder if present.
     const body = parsed.body.replace(/^#\s+<[^>]+>/m, `# ${name}`);
@@ -816,7 +850,6 @@ export class ManuscriptManager {
       if (afterId) this.insertAfter(afterId, node.id);
     }
 
-    await this.syncSceneNumbers();
     await this.persist();
     this._onDidChange.fire();
     return node;
@@ -862,7 +895,6 @@ export class ManuscriptManager {
       if (act) act.sceneIds.push(node.id);
     }
 
-    await this.syncSceneNumbers();
     await this.persist();
     this._onDidChange.fire();
     return node;
@@ -894,7 +926,8 @@ export class ManuscriptManager {
 
   private suggestPosition(kind: NodeKind): { x: number; y: number } {
     const sameKind = this.flow.nodes.filter((n) => n.kind === kind);
-    const lane = kind === "scene" ? 0 : kind === "character" ? 220 : 360;
+    const lane =
+      kind === "scene" ? 0 : kind === "character" ? 220 : kind === "place" ? 360 : 500;
     return { x: 80 + sameKind.length * 200, y: 80 + lane };
   }
 
@@ -991,36 +1024,64 @@ export class ManuscriptManager {
       this.nodeUri(node),
       enc.encode(serializeDoc(merged, body))
     );
-    // A name change in frontmatter should rename the node + file.
+    // A name change updates the display name only; the file is never renamed
+    // implicitly (use renameFile) so version control history stays intact.
     if (typeof patch.name === "string" && patch.name !== node.name) {
       await this.renameNode(id, patch.name);
     }
   }
 
-  /** Rename a node: update display name AND rename the backing file. */
+  /** Rename a node's display name (and `name:` in its file). The file keeps its path. */
   async renameNode(id: string, newName: string) {
     const node = this.getNode(id);
     if (!node) return;
-    const folder = this.folderFor(node.kind);
-    const newStem = await this.uniqueStem(folder, toSlug(newName));
-    const newRel = `${folder}/${newStem}.md`;
-    const oldUri = this.nodeUri(node);
-    const newUri = vscode.Uri.joinPath(this.root, ...newRel.split("/"));
-
-    // Update frontmatter name inside the file too.
     const { frontmatter, body } = await this.readDoc(node);
-    frontmatter.name = newName;
-    await vscode.workspace.fs.writeFile(
-      oldUri,
-      enc.encode(serializeDoc(frontmatter, body))
-    );
-    if (oldUri.path !== newUri.path) {
-      await vscode.workspace.fs.rename(oldUri, newUri, { overwrite: false });
+    if (frontmatter.name !== newName) {
+      frontmatter.name = newName;
+      await vscode.workspace.fs.writeFile(
+        this.nodeUri(node),
+        enc.encode(serializeDoc(frontmatter, body))
+      );
     }
     node.name = newName;
+    await this.persist();
+    this._onDidChange.fire();
+  }
+
+  /** Suggested filename stem for the "Rename file" prompt: the kebab-cased node name. */
+  suggestedStem(id: string): string | undefined {
+    const node = this.getNode(id);
+    return node ? toSlug(node.name) : undefined;
+  }
+
+  /**
+   * Explicitly rename a node's backing file to `<newStem>.md` in its folder.
+   * Returns an error message if the name is unusable, otherwise undefined.
+   */
+  async renameFile(id: string, newStem: string): Promise<string | undefined> {
+    const node = this.getNode(id);
+    if (!node) return "Node not found.";
+    const stem = newStem.trim().replace(/\.md$/i, "");
+    if (!stem || /[\\/:*?"<>|]/.test(stem) || stem === "_template") {
+      return "Invalid file name.";
+    }
+    const folder = this.folderFor(node.kind);
+    const newRel = `${folder}/${stem}.md`;
+    if (newRel === node.file) return undefined;
+    const newUri = vscode.Uri.joinPath(this.root, ...newRel.split("/"));
+    try {
+      await vscode.workspace.fs.stat(newUri);
+      return `${newRel} already exists.`;
+    } catch {
+      /* free to use */
+    }
+    await vscode.workspace.fs.rename(this.nodeUri(node), newUri, {
+      overwrite: false,
+    });
     node.file = newRel;
     await this.persist();
     this._onDidChange.fire();
+    return undefined;
   }
 
   // -- graph mutations -------------------------------------------------------
@@ -1063,7 +1124,6 @@ export class ManuscriptManager {
     } else {
       this.flow.edges.push({ id: randomUUID(), kind, source, target });
     }
-    await this.syncSceneNumbers();
     await this.persist();
     this._onDidChange.fire();
   }
@@ -1072,14 +1132,12 @@ export class ManuscriptManager {
     const e = this.flow.edges.find((x) => x.id === edgeId);
     if (!e) return;
     e.kind = kind;
-    await this.syncSceneNumbers();
     await this.persist();
     this._onDidChange.fire();
   }
 
   async deleteEdge(edgeId: string) {
     this.flow.edges = this.flow.edges.filter((e) => e.id !== edgeId);
-    await this.syncSceneNumbers();
     await this.persist();
     this._onDidChange.fire();
   }
@@ -1104,15 +1162,21 @@ export class ManuscriptManager {
         // file may already be gone; ignore
       }
     }
-    await this.syncSceneNumbers();
     await this.persist();
     this._onDidChange.fire();
   }
 
   // -- derived scene numbers written back to frontmatter --------------------
 
-  private async syncSceneNumbers() {
+  /**
+   * Write the derived scene/chapter numbers into each scene's frontmatter.
+   * Only ever runs when the user asks (the diagram's "Sync numbers" button) —
+   * never as a side effect of editing the graph, so version control only sees
+   * these changes when they're wanted. Returns how many files were changed.
+   */
+  async syncSceneNumbers(): Promise<number> {
     const numbers = deriveSceneNumbers(this.flow);
+    let changed = 0;
     for (const node of this.flow.nodes) {
       if (node.kind !== "scene") continue;
       const n = numbers.get(node.id);
@@ -1126,11 +1190,13 @@ export class ManuscriptManager {
             this.nodeUri(node),
             enc.encode(serializeDoc(frontmatter, body))
           );
+          changed++;
         }
       } catch {
         // file may have been removed out from under us; skip
       }
     }
+    return changed;
   }
 
   // -- spellcheck dictionary support ----------------------------------------

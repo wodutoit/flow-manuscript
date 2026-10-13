@@ -67,6 +67,10 @@ export const FIELDS: Record<string, FieldDef[]> = {
       options: ["sketch", "developed", "locked"],
     },
   ],
+  context: [
+    { key: "name", label: "Name", type: "text" },
+    { key: "type", label: "Type", type: "text" },
+  ],
   place: [
     { key: "name", label: "Name", type: "text" },
     {
@@ -133,5 +137,9 @@ export const SECTIONS: Record<string, SectionDef[]> = {
     { label: "Significance", markdown: "\n## Significance\n\n" },
     { label: "History", markdown: "\n## History\n\n" },
     { label: "Notes", markdown: "\n## Notes\n\n" },
+  ],
+  context: [
+    { label: "Notes", markdown: "\n## Notes\n\n" },
+    { label: "Poem", markdown: "\n## Poem\n\n" },
   ],
 };

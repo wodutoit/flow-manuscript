@@ -1,7 +1,18 @@
 // Shared types used by both the extension host (Node) and the webviews (browser).
 // Keep this file free of any Node or DOM specific imports.
 
-export type NodeKind = "scene" | "character" | "place";
+export type NodeKind = "scene" | "character" | "place" | "context";
+
+/** Human-readable label for a node kind. */
+export function kindLabel(kind: NodeKind): string {
+  return kind === "scene"
+    ? "Scene"
+    : kind === "character"
+    ? "Character"
+    : kind === "context"
+    ? "Context"
+    : "Place";
+}
 
 /** Sentinel id used by the editor to target the manuscript's overview.md. */
 export const OVERVIEW_ID = "__overview__";
@@ -154,10 +165,17 @@ export interface PlaceFrontmatter {
   status: EntityStatus;
 }
 
+/** Supplemental world-building / background / poems. `type` is free text. */
+export interface ContextFrontmatter {
+  name: string;
+  type?: string;
+}
+
 export type AnyFrontmatter =
   | SceneFrontmatter
   | CharacterFrontmatter
-  | PlaceFrontmatter;
+  | PlaceFrontmatter
+  | ContextFrontmatter;
 
 /** A parsed markdown doc: frontmatter object + raw body markdown. */
 export interface ParsedDoc<T = Record<string, unknown>> {
@@ -216,6 +234,7 @@ export type DiagramToHost =
   | { type: "deleteEdge"; edgeId: string }
   | { type: "deleteNode"; nodeId: string }
   | { type: "duplicateNode"; nodeId: string }
+  | { type: "syncNumbers" }
   | { type: "setEdgeKind"; edgeId: string; kind: EdgeKind }
   // act operations
   | { type: "addAct" }

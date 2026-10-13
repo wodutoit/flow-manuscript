@@ -153,6 +153,7 @@ function layout(state: DiagramState): LayoutResult {
   const laneY = maxActBottom + ENTITY_LANE_GAP;
   const chars = state.nodes.filter((n) => n.kind === "character");
   const places = state.nodes.filter((n) => n.kind === "place");
+  const contexts = state.nodes.filter((n) => n.kind === "context");
   chars.forEach((n, i) => {
     nodes.push({
       id: n.id,
@@ -166,6 +167,15 @@ function layout(state: DiagramState): LayoutResult {
       id: n.id,
       type: "place",
       position: { x: 40 + i * ENTITY_W, y: laneY + 120 },
+      data: n,
+    });
+  });
+
+  contexts.forEach((n, i) => {
+    nodes.push({
+      id: n.id,
+      type: "context",
+      position: { x: 40 + i * ENTITY_W, y: laneY + 240 },
       data: n,
     });
   });
@@ -551,6 +561,15 @@ function Canvas() {
             <button onClick={() => post({ type: "addNode", kind: "place" })}>
               + Place
             </button>
+            <button onClick={() => post({ type: "addNode", kind: "context" })}>
+              + Context
+            </button>
+            <button
+              onClick={() => post({ type: "syncNumbers" })}
+              title="Write the current scene order into each scene file's scene:/chapter: frontmatter"
+            >
+              Sync numbers
+            </button>
             <button
               onClick={() => {
                 if (selectedIdRef.current)
@@ -628,6 +647,8 @@ function Canvas() {
                 : "#6ea8fe"
               : n.type === "character"
               ? "#63e6be"
+              : n.type === "context"
+              ? "#f783ac"
               : "#ffd43b"
           }
           pannable

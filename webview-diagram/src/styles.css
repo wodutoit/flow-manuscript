@@ -134,6 +134,10 @@ body,
   border-left: 3px solid #ffd43b;
 }
 
+.node--context {
+  border-left: 3px solid #f783ac;
+}
+
 .node__warn {
   color: var(--vscode-errorForeground);
   font-weight: 800;

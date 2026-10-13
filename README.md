@@ -20,9 +20,14 @@ It reproduces the `new-manuscript` skill's folder structure natively, so manuscr
   scenes/       _template.md + <scene-name>.md
   characters/   _template.md + <character-name>.md
   places/       _template.md + <place-name>.md
+  context/      <item-name>.md   (created on first "+ Context"; world-building, background, poems)
 ```
 
-Scene `.md` files are named from the scene name (kebab-case). The **scene number is not in the filename** — it lives in the frontmatter (`scene:` / `chapter:`) and is derived from the solid-edge chain, then written back automatically. Renaming a scene renames its file.
+Files are named from the node name (kebab-case) **when created**, and are never renamed automatically — changing a name only updates the display name and `name:` in the file. Use **Rename File…** (tree right-click) to rename a file deliberately.
+
+The **scene number is not in the filename** — it is derived from the solid-edge chain and shown in the UI. It is written to the frontmatter (`scene:` / `chapter:`) only when you click **Sync numbers** on the diagram toolbar, so adding or reordering scenes doesn't touch every file in version control.
+
+**Context** items are free-standing nodes (like characters and places) backed by `context/*.md`, opened in the same rich editor. Use Shift+Enter for line breaks inside a stanza.
 
 > Note: this drops the skill's `NNN-` filename prefix in favour of graph-driven ordering. On-disk files no longer sort in story order; the manifest and frontmatter carry order instead. The `scene:` number is still written to frontmatter so `compile-manuscript` keeps working.
 

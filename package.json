@@ -61,6 +61,16 @@
         "icon": "$(add)"
       },
       {
+        "command": "flowManuscript.addContext",
+        "title": "Add Context",
+        "icon": "$(add)"
+      },
+      {
+        "command": "flowManuscript.renameFile",
+        "title": "Rename File…",
+        "icon": "$(edit)"
+      },
+      {
         "command": "flowManuscript.addAct",
         "title": "Add Act",
         "icon": "$(add)"
@@ -240,6 +250,21 @@
           "group": "inline"
         },
         {
+          "command": "flowManuscript.addContext",
+          "when": "view == flowManuscript.tree && viewItem == group:context",
+          "group": "inline"
+        },
+        {
+          "command": "flowManuscript.deleteNode",
+          "when": "view == flowManuscript.tree && viewItem == node:context",
+          "group": "inline"
+        },
+        {
+          "command": "flowManuscript.renameFile",
+          "when": "view == flowManuscript.tree && viewItem =~ /^node:(scene|character|place|context)$/",
+          "group": "1_modify"
+        },
+        {
           "command": "flowManuscript.addSceneToAct",
           "when": "view == flowManuscript.tree && viewItem == act",
           "group": "inline@1"
@@ -296,7 +321,7 @@
         },
         {
           "command": "flowManuscript.deleteNode",
-          "when": "view == flowManuscript.tree && (viewItem == node:scene || viewItem == node:character || viewItem == node:place)",
+          "when": "view == flowManuscript.tree && (viewItem == node:scene || viewItem == node:character || viewItem == node:place || viewItem == node:context)",
           "group": "1_modify"
         }
       ]
