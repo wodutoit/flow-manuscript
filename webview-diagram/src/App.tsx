@@ -429,7 +429,12 @@ function Canvas() {
     } else if (node.type === "act") {
       const collapsed = !!(node.data as DiagramActVM).collapsed;
       post({ type: "setActCollapsed", actId: node.id, collapsed: !collapsed });
-    } else if (node.type === "scene") {
+    } else if (
+      node.type === "scene" ||
+      node.type === "character" ||
+      node.type === "place" ||
+      node.type === "context"
+    ) {
       post({ type: "openNode", nodeId: node.id });
     }
   }, []);

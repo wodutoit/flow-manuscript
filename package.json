@@ -2,7 +2,7 @@
   "name": "flow-manuscript",
   "displayName": "Flow Manuscript",
   "description": "Plan and write novels as a scene flow diagram with a rich Markdown editor.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "publisher": "local",
   "license": "MIT",
   "repository": {

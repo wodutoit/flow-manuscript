@@ -94,7 +94,7 @@ npm run build      # builds extension host + both webview bundles
 npm install
 npm run build
 npm run package
-code --install-extension flow-manuscript-0.2.1.vsix --force
+code --install-extension flow-manuscript-0.2.2.vsix --force
 ```
 
 This produces:
