@@ -41,6 +41,13 @@ const COLLAPSED_H = 60; // height of a collapsed act
 const ENTITY_LANE_GAP = 160; // gap below acts before character/place lanes
 const ENTITY_W = 200;
 
+const ENTITY_TYPES = new Set(["character", "place", "context"]);
+const isNodeType = (t?: string) => t === "scene" || (!!t && ENTITY_TYPES.has(t));
+
+/** Stored position if the user has placed this node, else the default lane slot. */
+const entityPos = (n: DiagramNodeVM, fallback: { x: number; y: number }) =>
+  n.placed ? n.position : fallback;
+
 interface LayoutResult {
   nodes: Node[];
   actRects: Map<string, { x: number; y: number; w: number; h: number }>;
@@ -158,7 +165,7 @@ function layout(state: DiagramState): LayoutResult {
     nodes.push({
       id: n.id,
       type: "character",
-      position: { x: 40 + i * ENTITY_W, y: laneY },
+      position: entityPos(n, { x: 40 + i * ENTITY_W, y: laneY }),
       data: n,
     });
   });
@@ -166,7 +173,7 @@ function layout(state: DiagramState): LayoutResult {
     nodes.push({
       id: n.id,
       type: "place",
-      position: { x: 40 + i * ENTITY_W, y: laneY + 120 },
+      position: entityPos(n, { x: 40 + i * ENTITY_W, y: laneY + 120 }),
       data: n,
     });
   });
@@ -175,7 +182,7 @@ function layout(state: DiagramState): LayoutResult {
     nodes.push({
       id: n.id,
       type: "context",
-      position: { x: 40 + i * ENTITY_W, y: laneY + 240 },
+      position: entityPos(n, { x: 40 + i * ENTITY_W, y: laneY + 240 }),
       data: n,
     });
   });
@@ -448,7 +455,7 @@ function Canvas() {
   const persistNodePosition = useCallback((node: Node) => {
     if (node.type === "act") {
       post({ type: "moveActPosition", actId: node.id, position: node.position });
-    } else if (node.type === "scene") {
+    } else if (isNodeType(node.type)) {
       post({ type: "moveNode", nodeId: node.id, position: node.position });
     }
   }, []);
@@ -486,6 +493,11 @@ function Canvas() {
           actId: node.id,
           position: node.position,
         });
+        return;
+      }
+
+      if (node.type && ENTITY_TYPES.has(node.type)) {
+        post({ type: "moveNode", nodeId: node.id, position: node.position });
         return;
       }
 

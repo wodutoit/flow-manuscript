@@ -1090,6 +1090,7 @@ export class ManuscriptManager {
     const node = this.getNode(id);
     if (!node) return;
     node.position = position;
+    if (node.kind !== "scene") node.placed = true;
     await this.persist();
     // No event fire: position changes are cosmetic and already reflected client-side.
   }

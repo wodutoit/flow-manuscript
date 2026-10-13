@@ -41,6 +41,9 @@ export interface FlowNode {
   name: string;
   /** Canvas position. */
   position: { x: number; y: number };
+  /** Character/place/context only: true once the user has dragged the node, so
+   * its stored position is honored instead of the default lane layout. */
+  placed?: boolean;
 }
 
 /** An edge as stored in outline.flow.json. Only ever connects two scene nodes
